@@ -75,14 +75,25 @@ def plot_colocalization_modules(
     # ===============================
     # STEP 2. Use full graph and all cluster labels
     # ===============================
+    # `G_ig.vs['cluster']` may be an int per-vertex or a list of archetype
+    # indices (soft membership). Choose the first membership as the primary
+    # cluster for coloring; absent membership -> -1.
     raw_membership = np.array(G_ig.vs["cluster"], dtype=object)
     membership = []
-
     for x in raw_membership:
-        try:
-            membership.append(int(x))
-        except:
-            membership.append(-1)
+        if isinstance(x, (list, tuple, np.ndarray)):
+            if len(x) > 0:
+                try:
+                    membership.append(int(x[0]))
+                except Exception:
+                    membership.append(-1)
+            else:
+                membership.append(-1)
+        else:
+            try:
+                membership.append(int(x))
+            except Exception:
+                membership.append(-1)
 
     membership = np.array(membership, dtype=int)
 

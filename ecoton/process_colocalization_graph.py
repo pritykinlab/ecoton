@@ -1,14 +1,21 @@
 
 def ProcessColocalizationGraph(
     G_ig,
-    flavor="leiden",
+    flavor="archetypes",
     resolution=4.0,
     n_components=20,
     top_k=200,
     K=50,                 # number of archetypes
     z_threshold=0.30,     # threshold for Z (soft memberships → broad modules)
-    h_threshold=0.005,     # threshold for H (archetype gene programs → sharp modules)
-    seed=42
+    h_threshold=0.005,    # threshold for H (archetype gene programs → sharp modules)
+    seed=42,
+    # enrichment options
+    run_enrich=False,
+    msigdb_libraries=None,
+    organism='Mouse',
+    max_modules=50,
+    top_n_terms=20,
+    module_source='Z'
 ):
     """
     Process the co-localization graph to identify gene modules and compute centrality measures.
@@ -45,58 +52,13 @@ def ProcessColocalizationGraph(
         "Eigenvector": eig_cent
     })
 
-    # ========================================================
-    #  FLAVOR: LEIDEN
-    # ========================================================
-    if flavor.lower() == "leiden":
-        print("→ Running Leiden clustering...")
-        import leidenalg as la
-        
-        partition = la.find_partition(
-            G_ig,
-            la.RBConfigurationVertexPartition,
-            weights=G_ig.es['weight'],
-            resolution_parameter=resolution,
-            seed=seed
-        )
-
-        G_ig.vs['cluster'] = partition.membership
-        modules = [[G_ig.vs[i]['name'] for i in comm] for comm in partition]
-
-        return {
-            "modules_leiden": modules,
-            "centrality": df_centrality
-        }
-
-    # ========================================================
-    #  FLAVOR: NMF
-    # ========================================================
-    elif flavor.lower() == "nmf":
-        print(f"→ Running NMF clustering (n_components={n_components}, top_k={top_k})...")
-
-        from sklearn.decomposition import NMF
-
-        A = np.array(G_ig.get_adjacency(attribute="weight").data, dtype=float)
-        nmf_model = NMF(n_components=n_components, init="nndsvd", random_state=seed, max_iter=1000)
-        W = nmf_model.fit_transform(A)
-
-        gene_names = np.array(G_ig.vs['name'])
-
-        modules_nmf = [
-            list(gene_names[np.argsort(W[:, k])[::-1][:top_k]])
-            for k in range(n_components)
-        ]
-
-        return {
-            "modules_nmf": modules_nmf,
-            "W": W,
-            "centrality": df_centrality
-        }
+    # prepare return container
+    result = {"centrality": df_centrality}
 
     # ========================================================
     #  FLAVOR: ARCHETYPAL ANALYSIS
     # ========================================================
-    elif flavor.lower() == "archetypes":
+    if flavor.lower() == "archetypes":
         print(f"→ Running Archetypal Analysis (K={K})...")
 
         from sklearn.preprocessing import normalize
@@ -126,13 +88,112 @@ def ProcessColocalizationGraph(
             for k in range(K)
         ]
 
-        return {
+        result.update({
             "modules_Z": modules_Z,
             "modules_H": modules_H,
             "Z_df": Z_df,
             "H_df": H_df,
-            "centrality": df_centrality
-        }
+        })
+        # save soft-module membership per vertex: list of archetype indices
+        membership = {g: [] for g in genes}
+        for k, mod in enumerate(modules_Z):
+            for g in mod:
+                membership.setdefault(g, []).append(k)
+
+        # align to graph vertex order and store
+        G_ig.vs["cluster"] = [membership.get(v, []) for v in G_ig.vs["name"]]
+
+    # ========================================================
+    #  FLAVOR: LEIDEN (for benchmarking)
+    # ========================================================
+    elif flavor.lower() == "leiden":
+        print("→ Running Leiden clustering...")
+        import leidenalg as la
+
+        partition = la.find_partition(
+            G_ig,
+            la.RBConfigurationVertexPartition,
+            weights=G_ig.es['weight'],
+            resolution_parameter=resolution,
+            seed=seed
+        )
+
+        G_ig.vs['cluster'] = partition.membership
+        modules = [[G_ig.vs[i]['name'] for i in comm] for comm in partition]
+
+        result.update({"modules_leiden": modules})
+
+    # ========================================================
+    #  FLAVOR: NMF (for benchmarking)
+    # ========================================================
+    elif flavor.lower() == "nmf":
+        print(f"→ Running NMF clustering (n_components={n_components}, top_k={top_k})...")
+
+        from sklearn.decomposition import NMF
+
+        A = np.array(G_ig.get_adjacency(attribute="weight").data, dtype=float)
+        nmf_model = NMF(n_components=n_components, init="nndsvd", random_state=seed, max_iter=1000)
+        W = nmf_model.fit_transform(A)
+
+        gene_names = np.array(G_ig.vs['name'])
+
+        modules_nmf = [
+            list(gene_names[np.argsort(W[:, k])[::-1][:top_k]])
+            for k in range(n_components)
+        ]
+
+        result.update({"modules_nmf": modules_nmf, "W": W})
 
     else:
         raise ValueError("flavor must be one of {'leiden', 'nmf', 'archetypes'}")
+
+    # ----------------- Enrichment (optional) -----------------
+    if run_enrich:
+        import gseapy as gp
+
+        if msigdb_libraries is None:
+            msigdb_libraries = [
+                "MSigDB_Hallmark_2020",
+                "GO_Biological_Process_2025",
+                "GO_Molecular_Function_2025",
+                "GO_Cellular_Component_2025"
+            ]
+
+        # choose modules to enrich (preference order)
+        if "modules_Z" in result and module_source == 'Z':
+            modules_for_enrich = result["modules_Z"]
+        elif "modules_H" in result and module_source == 'H':
+            modules_for_enrich = result["modules_H"]
+        elif "modules_nmf" in result:
+            modules_for_enrich = result["modules_nmf"]
+        elif "modules_leiden" in result:
+            modules_for_enrich = result["modules_leiden"]
+        else:
+            modules_for_enrich = None
+
+        enrichment_results = {}
+        if modules_for_enrich is not None:
+            background = list(G_ig.vs['name'])
+            for idx, mod in enumerate(modules_for_enrich):
+                if idx >= max_modules:
+                    break
+                gene_list = mod
+                if len(gene_list) == 0:
+                    enrichment_results[idx] = None
+                    continue
+                enr = gp.enrichr(
+                    gene_list=gene_list,
+                    gene_sets=msigdb_libraries,
+                    organism=organism,
+                    cutoff=1.0,
+                    background=background
+                )
+                if enr is None or enr.results is None or enr.results.empty:
+                    enrichment_results[idx] = None
+                else:
+                    top_terms = enr.results.sort_values(by='P-value').head(top_n_terms)
+                    enrichment_results[idx] = top_terms
+
+        result['enrichment'] = enrichment_results
+
+    return result

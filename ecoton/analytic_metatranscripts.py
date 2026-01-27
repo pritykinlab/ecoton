@@ -7,13 +7,33 @@ of gene-gene interactions in metatranscript data using analytic null models.
 
 import numpy as np
 import pandas as pd
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree as KDTree
 import igraph as ig
+from typing import Optional
 
+def build_edges_from_metatranscripts(meta_df, radius=10.0):
+    coords = meta_df[['x_centroid', 'y_centroid']].values
+    sizes = meta_df['size'].values
+    ids = meta_df['meta_id'].values
+    tree = KDTree(coords)
+    pairs = tree.query_pairs(r=radius, output_type='ndarray')
+    if pairs.size == 0:
+        return pd.DataFrame(columns=['source', 'target', 'weight', 'gene_source', 'gene_target'])
+    src = pairs[:, 0]
+    tgt = pairs[:, 1]
+    weights = sizes[src] * sizes[tgt]
+    edges = pd.DataFrame({
+        'source': ids[src],
+        'target': ids[tgt],
+        'weight': weights,
+        'gene_source': meta_df['feature_name'].values[src],
+        'gene_target': meta_df['feature_name'].values[tgt],
+    })
+    return edges
 
 def analytic_null_metatranscripts(
     metadf: pd.DataFrame,
-    edges_df: pd.DataFrame,
+    edges_df: Optional[pd.DataFrame] = None,
     *,
     gene_col_meta: str = "feature_name",
     meta_id_col: str = "meta_id",
@@ -29,6 +49,11 @@ def analytic_null_metatranscripts(
     z_thresh: float = 1.96,
     require_positive_pmi: bool = True,
     recompute_weight_from_sizes: bool = False,
+    return_igraph: bool = True,
+    stats_df: bool = True,
+    igraph_weight: str = "PMI",
+    radius: float = 10.0,
+    verbose: bool = False,
 ):
     """
     Implements the size-aware analytic null over metatranscripts.
@@ -46,8 +71,15 @@ def analytic_null_metatranscripts(
     ----------
     metadf : pd.DataFrame
         Metatranscript dataframe with gene, meta_id, and size columns.
-    edges_df : pd.DataFrame
-        Edges between metatranscripts with source, target, weight, etc.
+    edges_df : pd.DataFrame or None
+        Edges between metatranscripts with source, target, weight, etc. If
+        ``None`` the function will build edges by calling
+        ``build_edges_from_metatranscripts(metadf)``. When building edges the
+        parameter ``radius`` (see below) is passed through to control the
+        neighborhood radius used by the KDTree.
+    radius : float, default 10.0
+        Radius (same units as `x_centroid`/`y_centroid`) used when constructing
+        edges via `build_edges_from_metatranscripts` if `edges_df` is None.
     gene_col_meta : str, default "feature_name"
         Column name for gene names in metadf.
     meta_id_col : str, default "meta_id"
@@ -79,17 +111,38 @@ def analytic_null_metatranscripts(
 
     Returns
     -------
+    If ``return_igraph`` is False (default):
+
     stats_df : pd.DataFrame
         DataFrame with columns: g_a, g_b, O, E, PMI, Z, keep
     globals : dict
         Dictionary with global statistics: S, total_transcripts, gene_totals, etc.
+
+    If ``return_igraph`` is True (default), the function returns a tuple
+    ``(stats_df, globals, G)`` where ``G`` is an ``igraph.Graph`` built from
+    the filtered significant edges. Set ``stats_df`` to ``False`` to exclude
+    the DataFrame from the return tuple (only ``globals`` and ``G`` will be
+    returned). The ``igraph_weight`` parameter controls which column from the
+    stats table is used as the graph edge weight; valid options are ``'PMI'``
+    or ``'Z'``. If ``verbose`` is True, concise progress messages will be
+    printed to stdout.
     """
+
+    # if edges not provided, build them from metadf
+    if edges_df is None:
+        if verbose:
+            print("[analytic_null_metatranscripts] building edges from metadf using radius=", radius)
+        edges_df = build_edges_from_metatranscripts(metadf, radius=radius)
+        if verbose:
+            print(f"[analytic_null_metatranscripts] built {len(edges_df)} edges")
 
     # ---- 1) Global gene frequencies f_i from metatranscripts table ----
     # total transcripts per gene = sum of 'size' across meta clusters of that gene
     gene_totals = metadf.groupby(gene_col_meta, sort=False)[size_col].sum().astype(np.float64)
     total_transcripts = float(gene_totals.sum())
     f = (gene_totals / (total_transcripts + eps)).astype(np.float64)  # Series: gene -> freq
+    if verbose:
+        print(f"[analytic_null_metatranscripts] total_transcripts={total_transcripts:.3f}, n_genes={len(gene_totals)}")
 
     # ---- 2) Attach sizes to each meta-edge (source/target) ----
     meta_sizes = metadf[[meta_id_col, size_col]].drop_duplicates(subset=[meta_id_col])
@@ -107,7 +160,6 @@ def analytic_null_metatranscripts(
     # add sizes
     e["s_src"] = e[src_col].map(meta_sizes)
     e["s_tgt"] = e[tgt_col].map(meta_sizes)
-
     # drop edges where size or gene is missing
     e = e.dropna(subset=[gene_src_col, gene_tgt_col, "s_src", "s_tgt"])
 
@@ -167,6 +219,9 @@ def analytic_null_metatranscripts(
     keep &= (O["Z"].to_numpy() > z_thresh)
 
     O["keep"] = keep
+    n_keep = int(O["keep"].sum()) if len(O) > 0 else 0
+    if verbose:
+        print(f"[analytic_null_metatranscripts] filtering applied: kept {n_keep} / {len(O)} gene pairs")
 
     globals_ = {
         "S": S,
@@ -177,7 +232,24 @@ def analytic_null_metatranscripts(
         "n_gene_pairs_observed": int(len(O)),
     }
 
-    return O, globals_
+    # validate igraph_weight
+    if igraph_weight not in ("PMI", "Z"):
+        raise ValueError("igraph_weight must be 'PMI' or 'Z'")
+
+    if return_igraph:
+        if verbose:
+            print(f"[analytic_null_metatranscripts] building igraph using weight={igraph_weight}")
+        G = stats_df_to_igraph(O, weight_col=igraph_weight, keep_col="keep", gene_a_col="g_a", gene_b_col="g_b")
+        if verbose:
+            print(f"[analytic_null_metatranscripts] igraph: n_vertices={len(G.vs)}, n_edges={len(G.es)}")
+        if stats_df:
+            return O, globals_, G
+        return globals_, G
+
+    if stats_df:
+        return O, globals_
+
+    return globals_
 
 
 def stats_df_to_igraph(

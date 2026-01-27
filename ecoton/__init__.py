@@ -9,6 +9,7 @@ from .statistics_niche_maps import bin_transcripts, bins_from_niche_threshold, c
 from .analytic_metatranscripts import analytic_null_metatranscripts, stats_df_to_igraph
 from .plot_colocalization_modules import plot_colocalization_modules
 from .plot_graph_umap import plot_graph_umap
+from .compute_niche_maps import create_niche_maps_by_archetype_all_at_once
 
 __version__ = "0.1.0"
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "stats_df_to_igraph",
     "plot_colocalization_modules"
     ,"plot_graph_umap"
+    ,"create_niche_maps_by_archetype_all_at_once"
 ]
 
