@@ -11,38 +11,30 @@ from scipy.spatial import cKDTree as KDTree
 import igraph as ig
 from typing import Optional
 
-def build_edges_from_metatranscripts(meta_df, radius=10.0):
+def build_edges_from_metatranscripts(meta_df, gene_col_meta: str = "feature_name", radius: float = 10.0):
     coords = meta_df[['x_centroid', 'y_centroid']].values
     sizes = meta_df['size'].values
     ids = meta_df['meta_id'].values
     tree = KDTree(coords)
     pairs = tree.query_pairs(r=radius, output_type='ndarray')
     if pairs.size == 0:
-        return pd.DataFrame(columns=['source', 'target', 'weight', 'gene_source', 'gene_target'])
+        return pd.DataFrame(columns=['edge_source', 'edge_target', 'weight', 'gene_source', 'gene_target'])
     src = pairs[:, 0]
     tgt = pairs[:, 1]
     weights = sizes[src] * sizes[tgt]
     edges = pd.DataFrame({
-        'source': ids[src],
-        'target': ids[tgt],
+        'edge_source': ids[src],
+        'edge_target': ids[tgt],
         'weight': weights,
-        'gene_source': meta_df['feature_name'].values[src],
-        'gene_target': meta_df['feature_name'].values[tgt],
+        'gene_source': meta_df[gene_col_meta].values[src],
+        'gene_target': meta_df[gene_col_meta].values[tgt],
     })
     return edges
 
 def analytic_null_metatranscripts(
     metadf: pd.DataFrame,
-    edges_df: Optional[pd.DataFrame] = None,
     *,
     gene_col_meta: str = "feature_name",
-    meta_id_col: str = "meta_id",
-    size_col: str = "size",
-    src_col: str = "source",
-    tgt_col: str = "target",
-    gene_src_col: str = "gene_source",
-    gene_tgt_col: str = "gene_target",
-    weight_col: str = "weight",
     undirected: bool = True,
     drop_self_gene_edges: bool = False,
     eps: float = 1e-9,
@@ -128,13 +120,21 @@ def analytic_null_metatranscripts(
     printed to stdout.
     """
 
-    # if edges not provided, build them from metadf
-    if edges_df is None:
-        if verbose:
-            print("[analytic_null_metatranscripts] building edges from metadf using radius=", radius)
-        edges_df = build_edges_from_metatranscripts(metadf, radius=radius)
-        if verbose:
-            print(f"[analytic_null_metatranscripts] built {len(edges_df)} edges")
+    # Hardcoded column names used across codebase
+    meta_id_col = "meta_id"
+    size_col = "size"
+    src_col = "edge_source"
+    tgt_col = "edge_target"
+    gene_src_col = "gene_source"
+    gene_tgt_col = "gene_target"
+    weight_col = "weight"
+
+    # build edges from metadf (edges are not accepted as input anymore)
+    if verbose:
+        print("[analytic_null_metatranscripts] building edges from metadf using radius=", radius)
+    edges_df = build_edges_from_metatranscripts(metadf, gene_col_meta=gene_col_meta, radius=radius)
+    if verbose:
+        print(f"[analytic_null_metatranscripts] built {len(edges_df)} edges")
 
     # ---- 1) Global gene frequencies f_i from metatranscripts table ----
     # total transcripts per gene = sum of 'size' across meta clusters of that gene
