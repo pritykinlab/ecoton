@@ -99,7 +99,7 @@ import matplotlib.patches as mpatches
 def plot_niche_continuous_and_percentile_categories(
     niche_maps,
     k=0,
-    percentiles=(80, 95, 98, 99),
+    percentiles=(90, 95, 98, 99),
     p=99.5,
     cmap_cont="RdBu_r",
     cat_colors=("#6baed6", "#fd8d3c", "#de2d26", "#67000d"),
