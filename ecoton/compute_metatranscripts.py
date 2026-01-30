@@ -44,7 +44,7 @@ def prepare_transcripts(mytranscripts,
         y_coord = 'y_location'
 
         if transcript_threshold_factor is None:
-            transcript_threshold_factor = 1000
+            transcript_threshold_factor = 500
         if min_transcripts is None:
             min_transcripts = 50
         if nofilter is None:

@@ -15,6 +15,7 @@ def ProcessColocalizationGraph(
     organism='Mouse',
     max_modules=50,
     top_n_terms=20,
+    compute_centrality=True,
     module_source='Z'
 ):
     """
@@ -29,31 +30,37 @@ def ProcessColocalizationGraph(
     K : int                 (for archetypes)
     z_threshold : float     (for archetypes)
     h_threshold : float     (for archetypes)
+    seed : int              (random seed)
+    compute_centrality : bool
+        Whether to compute and return centrality metrics (default True).
     """
 
     import pandas as pd
     import numpy as np
     import igraph as ig
 
-    # ---------- CENTRALITY (same for all flavors) ----------
-    deg_cent = G_ig.strength(weights=G_ig.es['weight'])
-    deg_unweighted = G_ig.degree()
-    inv_weights = [1/w for w in G_ig.es['weight']]
-    bet_cent = G_ig.betweenness(weights=inv_weights)
-    close_cent = G_ig.closeness(weights=inv_weights)
-    eig_cent = G_ig.eigenvector_centrality(weights=G_ig.es['weight'])
-
-    df_centrality = pd.DataFrame({
-        "Gene": G_ig.vs['name'],
-        "Degree": deg_cent,
-        "Degree Unweighted": deg_unweighted,
-        "Betweenness": bet_cent,
-        "Closeness": close_cent,
-        "Eigenvector": eig_cent
-    })
-
+    # ---------- CENTRALITY (same for all flavors, optional) ----------
     # prepare return container
-    result = {"centrality": df_centrality}
+    result = {}
+
+    if compute_centrality:
+        deg_cent = G_ig.strength(weights=G_ig.es['weight'])
+        deg_unweighted = G_ig.degree()
+        inv_weights = [1/w for w in G_ig.es['weight']]
+        bet_cent = G_ig.betweenness(weights=inv_weights)
+        close_cent = G_ig.closeness(weights=inv_weights)
+        eig_cent = G_ig.eigenvector_centrality(weights=G_ig.es['weight'])
+
+        df_centrality = pd.DataFrame({
+            "Gene": G_ig.vs['name'],
+            "Degree": deg_cent,
+            "Degree Unweighted": deg_unweighted,
+            "Betweenness": bet_cent,
+            "Closeness": close_cent,
+            "Eigenvector": eig_cent
+        })
+
+        result["centrality"] = df_centrality
 
     # ========================================================
     #  FLAVOR: ARCHETYPAL ANALYSIS
