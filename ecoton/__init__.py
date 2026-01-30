@@ -11,6 +11,7 @@ from .plot_colocalization_modules import plot_colocalization_modules
 from .plot_graph_umap import plot_graph_umap
 from .compute_niche_maps import create_niche_maps_by_archetype_all_at_once
 from .plot_niche_maps import plot_niche_continuous_and_binary
+from .plot_niche_maps import plot_niche_continuous_and_percentile_categories
 
 __version__ = "0.1.0"
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "plot_colocalization_modules"
     ,"plot_graph_umap"
     ,"plot_niche_continuous_and_binary"
+    ,"plot_niche_continuous_and_percentile_categories"
     ,"create_niche_maps_by_archetype_all_at_once"
 ]
 
