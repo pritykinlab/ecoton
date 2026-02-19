@@ -99,15 +99,9 @@ def ProcessColocalizationGraph(
 
     # ----------------- Enrichment (optional) -----------------
     if run_enrich:
-        import gseapy as gp
-
-        if msigdb_libraries is None:
-            msigdb_libraries = [
-                "MSigDB_Hallmark_2020",
-                "GO_Biological_Process_2025",
-                "GO_Molecular_Function_2025",
-                "GO_Cellular_Component_2025"
-            ]
+        # Use the local enrichment wrapper which uses gseapy.enrichr with
+        # concatenated local GMT files prepared by `ecoton.enrichment`.
+        from ecoton.enrichment import enrichr_with_local_gmt
 
         if module_source == 'H':
             modules_for_enrich = result.get("modules_H", None)
@@ -122,19 +116,19 @@ def ProcessColocalizationGraph(
                     enrichment_results[idx] = None
                     continue
 
-                enr = gp.enrichr(
-                    gene_list=mod,
-                    gene_sets=msigdb_libraries,
-                    organism=organism,
-                    cutoff=1.0,
-                    background=background
-                )
+                try:
+                    top_terms = enrichr_with_local_gmt(
+                        gene_list=mod,
+                        species=("human" if organism.lower().startswith("h") else "mouse"),
+                        pathways_dir=None,
+                        background=background,
+                        top_n=top_n_terms,
+                        organism=organism,
+                    )
+                except Exception:
+                    top_terms = None
 
-                if enr is None or enr.results is None or enr.results.empty:
-                    enrichment_results[idx] = None
-                else:
-                    top_terms = enr.results.sort_values(by='P-value').head(top_n_terms)
-                    enrichment_results[idx] = top_terms
+                enrichment_results[idx] = top_terms
 
         result['enrichment'] = enrichment_results
 
