@@ -10,6 +10,7 @@ ecoton/compute_niche_maps.py
 ecoton/permute_metatranscripts.py
 ecoton/plot_colocalization_modules.py
 ecoton/plot_graph_umap.py
+ecoton/plot_niche_maps.py
 ecoton/process_colocalization_graph.py
 ecoton/statistics_niche_maps.py
 ecoton.egg-info/PKG-INFO

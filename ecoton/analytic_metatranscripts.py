@@ -11,9 +11,11 @@ from scipy.spatial import cKDTree as KDTree
 import igraph as ig
 from typing import Optional
 
+from collections import defaultdict
+
 def build_edges_from_metatranscripts(meta_df, gene_col_meta: str = "feature_name", radius: float = 10.0):
     coords = meta_df[['x_centroid', 'y_centroid']].values
-    sizes = meta_df['size'].values
+    sizes = meta_df['n'].values
     ids = meta_df['meta_id'].values
     tree = KDTree(coords)
     pairs = tree.query_pairs(r=radius, output_type='ndarray')
@@ -43,8 +45,8 @@ def analytic_null_metatranscripts(
     recompute_weight_from_sizes: bool = False,
     return_igraph: bool = True,
     stats_df: bool = True,
-    igraph_weight: str = "PMI",
-    radius: float = 10.0,
+    igraph_weight: str = "Z",
+    radius: float = 12.0,
     verbose: bool = False,
 ):
     """
@@ -122,7 +124,7 @@ def analytic_null_metatranscripts(
 
     # Hardcoded column names used across codebase
     meta_id_col = "meta_id"
-    size_col = "size"
+    size_col = "n"
     src_col = "edge_source"
     tgt_col = "edge_target"
     gene_src_col = "gene_source"
@@ -252,7 +254,7 @@ def analytic_null_metatranscripts(
     return globals_
 
 
-def stats_df_to_igraph(
+def stats_df_to_igraph_old(
     stats_df: pd.DataFrame,
     *,
     weight_col: str = "PMI",     # or "Z"
@@ -313,6 +315,41 @@ def stats_df_to_igraph(
     G.es["weight"] = weights
 
     # Optional: store additional edge stats
+    for col in ["O", "E", "PMI", "Z"]:
+        if col in df.columns:
+            G.es[col] = df[col].astype(float).tolist()
+
+    return G
+
+def stats_df_to_igraph(
+    stats_df: pd.DataFrame,
+    *,
+    weight_col: str = "Z",
+    keep_col: str = "keep",
+    gene_a_col: str = "g_a",
+    gene_b_col: str = "g_b",
+):
+    # ---- 1) Filter significant edges ----
+    df = stats_df[stats_df[keep_col]].copy()
+
+    # >>> NEW: drop gene self-loops (g_a == g_b) from the graph
+    df = df[df[gene_a_col] != df[gene_b_col]]
+
+    if df.empty:
+        raise ValueError("No non-self edges passed the significance filter.")
+
+    # ---- 2) Build vertex set ----
+    genes = pd.Index(pd.unique(df[[gene_a_col, gene_b_col]].values.ravel()))
+    gene_to_vid = {g: i for i, g in enumerate(genes)}
+
+    # ---- 3) Build edge list ----
+    edges = [(gene_to_vid[a], gene_to_vid[b]) for a, b in zip(df[gene_a_col], df[gene_b_col])]
+    weights = df[weight_col].astype(float).tolist()
+
+    G = ig.Graph(n=len(genes), edges=edges, directed=False)
+    G.vs["name"] = genes.tolist()
+    G.es["weight"] = weights
+
     for col in ["O", "E", "PMI", "Z"]:
         if col in df.columns:
             G.es[col] = df[col].astype(float).tolist()

@@ -28,3 +28,6 @@ Repository = "https://github.com/pritykinlab/ecoton"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools.package-data]
+"ecoton" = ["resources/*"]

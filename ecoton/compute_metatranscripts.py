@@ -1,5 +1,4 @@
 import pandas as pd
-from sklearn.cluster import DBSCAN
 from joblib import Parallel, delayed
 import numpy as np
 
@@ -180,80 +179,160 @@ def prepare_transcripts(mytranscripts,
     }
 
     return prep
+    
 
+import numpy as np
+import pandas as pd
 
-def build_metatranscripts(prep_obj, eps=5, min_samples=3, batch_size=200, n_jobs=-1):
-    """Run DBSCAN-based metatranscript building using the prepared object.
+def build_binned_metatranscripts_one_gene(
+    sub: pd.DataFrame,
+    gene: str,
+    bin_um: float = 8.0,
+    min_points: int = 3,
+    gene_name = "feature_name",
+    x_col: str = "x_location",
+    y_col: str = "y_location",
+    # adaptive parameters
+    adaptive_min_points: bool = True,
+    global_bin_counts_series: bool = None,  # MultiIndex (bin_x,bin_y) -> global_n
+    global_low_count_threshold: int = 50,
+    low_count_min_points: int = 2,
+):
+    if len(sub) == 0:
+        return pd.DataFrame(columns=[gene_name,"bin_x","bin_y","n","x_centroid","y_centroid"])
 
-    This function adds a 'metatranscripts' entry to `prep_obj` and returns it.
-    """
-    sub_transcripts = prep_obj['filtered_transcripts']
-    genes = prep_obj['genes']
-    gene_name = prep_obj['gene_name']
-    x_coord = prep_obj['x_coord']
-    y_coord = prep_obj['y_coord']
+    x = sub[x_col].to_numpy(dtype=np.float32, copy=False)
+    y = sub[y_col].to_numpy(dtype=np.float32, copy=False)
 
-    def cluster_gene_batch(gene_batch):
-        batch_results = {}
-        for gene in gene_batch:
-            gene_data = sub_transcripts[sub_transcripts[gene_name] == gene]
-            coords = gene_data[[x_coord, y_coord]]
+    bin_x = np.floor(x / bin_um).astype(np.int32)
+    bin_y = np.floor(y / bin_um).astype(np.int32)
 
-            if coords.shape[0] == 0:
-                batch_results[gene] = pd.Series(dtype=int)
-                continue
+    tmp = pd.DataFrame({"bin_x": bin_x, "bin_y": bin_y, "x": x, "y": y})
 
-            db = DBSCAN(eps=eps, min_samples=min_samples, algorithm='kd_tree').fit(coords)
-            myseries = pd.Series(db.labels_, index=gene_data.index)
-            batch_results[gene] = myseries[myseries != -1]
-        return batch_results
-
-    gene_batches = [genes[i:i + batch_size] for i in range(0, len(genes), batch_size)]
-
-    print(f"Total genes: {len(genes)}")
-    print(f"Total batches: {len(gene_batches)} (batch size = {batch_size})")
-
-    results_batches = Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(cluster_gene_batch)(batch) for batch in gene_batches
+    meta = (
+        tmp.groupby(["bin_x", "bin_y"], sort=False)
+           .agg(n=("bin_x", "size"), x_centroid=("x", "mean"), y_centroid=("y", "mean"))
+           .reset_index()
     )
 
-    results = {}
-    for batch_dict in results_batches:
-        results.update(batch_dict)
+    # ----- adaptive filtering WITHOUT merge -----
+    if adaptive_min_points:
+        if global_bin_counts_series is None:
+            raise ValueError("Need global_bin_counts_series when adaptive_min_points=True")
 
-    prep_obj['metatranscripts'] = results
+        # Fast lookup using MultiIndex
+        idx = pd.MultiIndex.from_arrays([meta["bin_x"].values, meta["bin_y"].values])
+        global_n = global_bin_counts_series.reindex(idx).to_numpy()
 
-    # finalize clusters into metatranscript summary and clustered transcripts
-    prep_obj = finalize_metatranscripts(prep_obj)
-    return prep_obj
+        required = np.where(
+            global_n < global_low_count_threshold,
+            low_count_min_points,
+            min_points
+        ).astype(np.int32)
 
+        meta = meta[meta["n"].to_numpy() >= required].copy()
+    else:
+        meta = meta[meta["n"] >= min_points].copy()
 
-def ComputeMetatranscripts_old(mytranscripts,
-                               transcript_threshold_factor=1000,
-                               min_transcripts=50,
-                               nofilter=False,
-                               mode='xenium_5k',
-                               batch_size=200):
-    """Legacy wrapper that preserves original behavior (kept for now).
+    if len(meta) == 0:
+        return meta.assign(feature_name=pd.Series([], dtype="category"))[
+            [gene_name,"bin_x","bin_y","n","x_centroid","y_centroid"]
+        ]
 
-    This function calls the new `prepare_transcripts` and `build_metatranscripts`
-    but returns only the metatranscript results to emulate the previous API.
-    """
-    prep = prepare_transcripts(mytranscripts,
-                               transcript_threshold_factor=transcript_threshold_factor,
-                               min_transcripts=min_transcripts,
-                               nofilter=nofilter,
-                               mode=mode)
-    prep = build_metatranscripts(prep, batch_size=batch_size)
-    return prep['metatranscripts']
+    meta.insert(0, gene_name, gene)
 
+    meta["bin_x"] = meta["bin_x"].astype(np.int32)
+    meta["bin_y"] = meta["bin_y"].astype(np.int32)
+    meta["n"] = meta["n"].astype(np.int32)
+    meta["x_centroid"] = meta["x_centroid"].astype(np.float32)
+    meta["y_centroid"] = meta["y_centroid"].astype(np.float32)
+
+    return meta[[gene_name,"bin_x","bin_y","n","x_centroid","y_centroid"]]
+
+def build_metatranscripts(
+    df: pd.DataFrame,
+    genes,
+    bin_um: float = 8.0,
+    min_points: int = 3,
+    print_every: int = 200,
+    gene_name = "feature_name",
+    x_col: str = "x_location",
+    y_col: str = "y_location",
+    adaptive_min_points: bool = True,
+    global_low_count_threshold: int = 50,
+    low_count_min_points: int = 2,
+):
+    grouped = df.groupby(gene_name, sort=False)
+
+    # ---- Build GLOBAL bin lookup ONCE ----
+    x_all = df[x_col].to_numpy(dtype=np.float32, copy=False)
+    y_all = df[y_col].to_numpy(dtype=np.float32, copy=False)
+
+    bin_x_all = np.floor(x_all / bin_um).astype(np.int32)
+    bin_y_all = np.floor(y_all / bin_um).astype(np.int32)
+
+    global_bin_counts_series = (
+        pd.DataFrame({"bin_x": bin_x_all, "bin_y": bin_y_all})
+        .groupby(["bin_x","bin_y"], sort=False)
+        .size()
+    )
+    # --------------------------------------
+
+    metas = []
+    total_meta = 0
+
+    for i, gene in enumerate(genes, start=1):
+        if gene not in grouped.groups:
+            continue
+
+        sub = grouped.get_group(gene)[[x_col, y_col]]
+
+        meta = build_binned_metatranscripts_one_gene(
+            sub=sub,
+            gene=gene,
+            bin_um=bin_um,
+            min_points=min_points,
+            gene_name=gene_name,
+            x_col=x_col,
+            y_col=y_col,
+            adaptive_min_points=adaptive_min_points,
+            global_bin_counts_series=global_bin_counts_series,
+            global_low_count_threshold=global_low_count_threshold,
+            low_count_min_points=low_count_min_points,
+        )
+
+        if len(meta):
+            metas.append(meta)
+            total_meta += len(meta)
+
+        if i % print_every == 0:
+            print(f"[{i}/{len(genes)}] genes | metatranscripts so far: {total_meta:,}")
+
+    meta_df = pd.concat(metas, ignore_index=True) if metas else pd.DataFrame(
+        columns=["feature_name","bin_x","bin_y","n","x_centroid","y_centroid"]
+    )
+
+    meta_df["feature_name"] = meta_df["feature_name"].astype("category")
+    meta_df["bin_x"] = meta_df["bin_x"].astype(np.int32)
+    meta_df["bin_y"] = meta_df["bin_y"].astype(np.int32)
+    meta_df["n"] = meta_df["n"].astype(np.int32)
+    meta_df["x_centroid"] = meta_df["x_centroid"].astype(np.float32)
+    meta_df["y_centroid"] = meta_df["y_centroid"].astype(np.float32)
+    meta_df["meta_id"] = meta_df.index.astype(np.int32)
+
+    return meta_df
 
 def ComputeMetatranscripts(mytranscripts,
                            transcript_threshold_factor=None,
                            min_transcripts=None,
                            nofilter=None,
                            mode='xenium_5k',
-                           batch_size=200):
+                           adaptive_min_points: bool = True,
+                           global_low_count_threshold: int = 50,
+                           low_count_min_points: int = 2,
+                           bin_um: float = 8.0,
+                           min_points: int = 3,
+                           ):
     """Orchestrator: prepare transcripts then build metatranscripts.
 
     Returns the preparation object with an added 'metatranscripts' key.
@@ -263,42 +342,15 @@ def ComputeMetatranscripts(mytranscripts,
                                min_transcripts=min_transcripts,
                                nofilter=nofilter,
                                mode=mode)
-    prep = build_metatranscripts(prep, batch_size=batch_size)
+    
+    prep['metatranscripts'] = build_metatranscripts(prep['filtered_transcripts'], prep['genes'], 
+                                            bin_um=bin_um, 
+                                            min_points=min_points,
+                                            gene_name=prep['gene_name'],
+                                            x_col=prep['x_coord'],
+                                            y_col=prep['y_coord'],
+                                            adaptive_min_points=adaptive_min_points,
+                                            global_low_count_threshold=global_low_count_threshold,
+                                            low_count_min_points=low_count_min_points,
+                                            )
     return prep
-
-
-def finalize_metatranscripts(prep_obj):
-    """Take `prep_obj` with 'metatranscripts' and 'filtered_transcripts',
-    compute cluster assignments, build a metatranscript summary DataFrame,
-    and attach results back to prep_obj.
-    """
-    results = prep_obj.get('metatranscripts', {})
-    filtered_df = prep_obj['filtered_transcripts']
-    gene_name = prep_obj['gene_name']
-    x_coord = prep_obj['x_coord']
-    y_coord = prep_obj['y_coord']
-
-    clusters = pd.Series(-1, index=filtered_df.index)
-    for s in results.values():
-        clusters.loc[s.index] = s.values
-
-    filtered_df = filtered_df.copy()
-    filtered_df['cluster'] = clusters
-
-    clustered_df = filtered_df[filtered_df['cluster'] != -1]
-
-    metatranscripts = (
-        clustered_df
-        .groupby([gene_name, 'cluster'], as_index=False)
-        .agg(
-            x_centroid=(x_coord, 'mean'),
-            y_centroid=(y_coord, 'mean'),
-            size=(x_coord, 'size')
-        )
-    )
-
-    metatranscripts['meta_id'] = np.arange(len(metatranscripts))
-
-    prep_obj['clustered_transcripts'] = clustered_df
-    prep_obj['metatranscripts_df'] = metatranscripts
-    return prep_obj
