@@ -124,8 +124,8 @@ def prepare_transcripts(mytranscripts,
     elif mode == 'cosmx':
         print(f"Mode: {mode}")
         gene_name = 'target'
-        x_coord = 'x_global_px'
-        y_coord = 'y_global_px'
+        x_coord = 'x_global_um'
+        y_coord = 'y_global_um'
 
         if transcript_threshold_factor is None:
             transcript_threshold_factor = 0.5 # no max filtering
@@ -149,6 +149,10 @@ def prepare_transcripts(mytranscripts,
         filtered_df = hq_transcripts[hq_transcripts['target'].isin(valid_genes)]
         if nofilter:
             filtered_df = hq_transcripts
+
+        filtered_df = filtered_df.copy()
+        filtered_df[x_coord] = filtered_df['x_global_px'].astype(np.float32) * 0.18
+        filtered_df[y_coord] = filtered_df['y_global_px'].astype(np.float32) * 0.18
 
         genes = list(filtered_df['target'].astype('category').unique())
         sub_transcripts = filtered_df
@@ -235,9 +239,9 @@ def build_binned_metatranscripts_one_gene(
         meta = meta[meta["n"] >= min_points].copy()
 
     if len(meta) == 0:
-        return meta.assign(feature_name=pd.Series([], dtype="category"))[
-            [gene_name,"bin_x","bin_y","n","x_centroid","y_centroid"]
-        ]
+        meta = meta.copy()
+        meta[gene_name] = pd.Series([], dtype="category")
+        return meta[[gene_name, "bin_x", "bin_y", "n", "x_centroid", "y_centroid"]]
 
     meta.insert(0, gene_name, gene)
 
@@ -309,10 +313,10 @@ def build_metatranscripts(
             print(f"[{i}/{len(genes)}] genes | metatranscripts so far: {total_meta:,}")
 
     meta_df = pd.concat(metas, ignore_index=True) if metas else pd.DataFrame(
-        columns=["feature_name","bin_x","bin_y","n","x_centroid","y_centroid"]
+        columns=[gene_name,"bin_x","bin_y","n","x_centroid","y_centroid"]
     )
 
-    meta_df["feature_name"] = meta_df["feature_name"].astype("category")
+    meta_df[gene_name] = meta_df[gene_name].astype("category")
     meta_df["bin_x"] = meta_df["bin_x"].astype(np.int32)
     meta_df["bin_y"] = meta_df["bin_y"].astype(np.int32)
     meta_df["n"] = meta_df["n"].astype(np.int32)

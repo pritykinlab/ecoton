@@ -254,6 +254,88 @@ def analytic_null_metatranscripts(
     return globals_
 
 
+def combine_O_matrices_stouffer(
+    O_list,
+    *,
+    gene_a_col: str = "g_a",
+    gene_b_col: str = "g_b",
+    z_col: str = "Z",
+    undirected: bool = True,
+    n_thresh: int = 2,
+    z_thresh: float = 1.96,
+):
+    """
+    Combine a list of analytic-null O tables by gene pair using Stouffer's method.
+
+    Parameters
+    ----------
+    O_list : list[pd.DataFrame]
+        List of O DataFrames (e.g., from multiple slices), each containing
+        columns for gene pairs and a Z-score.
+    gene_a_col : str, default "g_a"
+        Column name for first gene in pair.
+    gene_b_col : str, default "g_b"
+        Column name for second gene in pair.
+    z_col : str, default "Z"
+        Column name containing per-slice Z-scores.
+    undirected : bool, default True
+        If True, treat (A,B) and (B,A) as the same pair.
+    n_thresh : int, default 2
+        Minimum number of slices required for a pair to be kept.
+    z_thresh : float, default 1.96
+        Minimum combined Z threshold required for a pair to be kept.
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined O-like table with columns:
+        [gene_a_col, gene_b_col, "n_slices", "Z", "keep"]
+        where Z is the Stouffer-combined score:
+            Z_comb = sum(z_i) / sqrt(k)
+        with k = number of slices where the pair is present and z is finite.
+        keep is True when n_slices >= n_thresh and Z > z_thresh.
+    """
+    if O_list is None or len(O_list) == 0:
+        raise ValueError("O_list must contain at least one DataFrame")
+
+    frames = []
+    for i, O in enumerate(O_list):
+        if O is None or len(O) == 0:
+            continue
+        missing = [c for c in (gene_a_col, gene_b_col, z_col) if c not in O.columns]
+        if missing:
+            raise ValueError(f"O_list[{i}] is missing required columns: {missing}")
+
+        df = O[[gene_a_col, gene_b_col, z_col]].copy()
+        df = df[np.isfinite(df[z_col].to_numpy())]
+        if len(df) == 0:
+            continue
+
+        if undirected:
+            g1 = df[gene_a_col].astype(str).to_numpy()
+            g2 = df[gene_b_col].astype(str).to_numpy()
+            df[gene_a_col] = np.minimum(g1, g2)
+            df[gene_b_col] = np.maximum(g1, g2)
+        else:
+            df[gene_a_col] = df[gene_a_col].astype(str)
+            df[gene_b_col] = df[gene_b_col].astype(str)
+
+        frames.append(df)
+
+    if len(frames) == 0:
+        return pd.DataFrame(columns=[gene_a_col, gene_b_col, "n_slices", "Z", "keep"])
+
+    pooled = pd.concat(frames, ignore_index=True)
+    grouped = pooled.groupby([gene_a_col, gene_b_col], sort=False)[z_col]
+
+    out = grouped.agg(Z_sum="sum", n_slices="count").reset_index()
+    out["Z"] = out["Z_sum"].to_numpy() / np.sqrt(out["n_slices"].to_numpy(dtype=np.float64))
+    out["keep"] = (out["n_slices"].to_numpy() >= int(n_thresh)) & (out["Z"].to_numpy() > float(z_thresh))
+    out = out.drop(columns=["Z_sum"])
+
+    return out[[gene_a_col, gene_b_col, "n_slices", "Z", "keep"]]
+
+
 def stats_df_to_igraph_old(
     stats_df: pd.DataFrame,
     *,

@@ -48,11 +48,41 @@ def _parse_cell_ids(
 ):
     cell = df[cell_col].to_numpy(copy=False)
 
+    # normalise unassigned_tokens: accept a bare scalar, str, or any iterable
+    if isinstance(unassigned_tokens, (str, bytes)):
+        unassigned_tokens = (unassigned_tokens,)
+    elif not hasattr(unassigned_tokens, "__iter__"):
+        unassigned_tokens = (unassigned_tokens,)
+    else:
+        unassigned_tokens = tuple(unassigned_tokens)
+
     if np.issubdtype(cell.dtype, np.number):
-        cell_num = cell.astype(np.float64, copy=False)
-        unassigned = np.isnan(cell_num) | (cell_num == -1)
-        assigned = ~unassigned
-        cell_assigned_str = cell_num[assigned].astype(np.int64).astype(str)
+        if np.issubdtype(cell.dtype, np.integer):
+            cell_int = cell.astype(np.int64, copy=False)
+            unassigned = (cell_int == -1)
+            for tok in unassigned_tokens:
+                try:
+                    unassigned |= (cell_int == int(tok))
+                except (ValueError, TypeError):
+                    pass
+            assigned = ~unassigned
+            cell_assigned_str = cell_int[assigned].astype(str)
+        else:
+            cell_num = cell.astype(np.float64, copy=False)
+            unassigned = np.isnan(cell_num) | (cell_num == -1)
+            # also honour user-supplied unassigned_tokens (e.g. 0)
+            for tok in unassigned_tokens:
+                try:
+                    unassigned |= (cell_num == float(tok))
+                except (ValueError, TypeError):
+                    pass
+            assigned = ~unassigned
+
+            assigned_vals = cell_num[assigned]
+            if assigned_vals.size and np.all(np.isfinite(assigned_vals)) and np.all(assigned_vals == np.floor(assigned_vals)):
+                cell_assigned_str = assigned_vals.astype(np.int64).astype(str)
+            else:
+                cell_assigned_str = np.asarray([str(v) for v in assigned_vals])
 
         if verbose:
             print("[cells] detected numeric cell ids")
@@ -91,7 +121,7 @@ def _parse_cell_ids(
 
 def bin_transcripts(
     df,
-    bin_size=10.0,
+    bin_size=8.0,
     x_col="x_location",
     y_col="y_location",
     gene_col="feature_name",
