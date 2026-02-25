@@ -18,7 +18,7 @@ import textwrap
 
 def plot_colocalization_modules(
     G_ig,
-    module_labels,
+    module_labels,  # <-- can be dict {module_id: label} OR list (see below)
     myclusters=None,
     title="Colocalization Modules",
     figsize=(4, 4),
@@ -36,10 +36,11 @@ def plot_colocalization_modules(
     ----------
     G_ig : ig.Graph
         igraph Graph object with 'cluster' vertex attribute and 'weight' edge attribute.
-    module_labels : list of str
-        Labels for each cluster/module.
+    module_labels : dict[int, str] OR list[str]
+        Prefer dict keyed by true module id (e.g. {0:"...", 22:"...", 24:"B cell"}).
+        If you pass a list, labels are assumed to be aligned to module id == list index.
     myclusters : list of int, optional
-        Cluster IDs to highlight. If None, highlights all clusters.
+        Cluster IDs to highlight. If None, highlights all clusters present in module_labels.
     title : str, default "Colocalization Modules"
         Plot title.
     figsize : tuple, default (4, 4)
@@ -62,6 +63,13 @@ def plot_colocalization_modules(
     matplotlib.axes.Axes
         The axes object containing the plot.
     """
+
+    # ===============================
+    # STEP 0. Normalize module_labels
+    # ===============================
+    # If module_labels is a list, treat as {idx: label}
+    if isinstance(module_labels, (list, tuple, np.ndarray)):
+        module_labels = {i: str(lbl) for i, lbl in enumerate(module_labels)}
 
     # ===============================
     # STEP 1. Ensure weights exist
@@ -145,8 +153,9 @@ def plot_colocalization_modules(
     print("Computing density peaks...")
     label_positions = {}
 
+    # FIX: default to actual module ids from module_labels, not range(len(...))
     if myclusters is None:
-        myclusters = list(range(len(module_labels)))
+        myclusters = sorted(module_labels.keys())
 
     for cluster_id in unique_clusters:
         if cluster_id not in myclusters:
@@ -203,8 +212,10 @@ def plot_colocalization_modules(
     ys = []
 
     for cid, (lx, ly) in label_positions.items():
-        if cid >= len(module_labels):
+        # FIX: look up by true module id
+        if cid not in module_labels:
             continue
+
         label = f"{cid}. {module_labels[cid]}"
         wrapped = "\n".join(textwrap.wrap(label, wrap_width))
 
@@ -247,3 +258,77 @@ def plot_colocalization_modules(
     plt.tight_layout()
 
     return ax
+
+def plot_gene_program_from_W(
+    W_df,
+    archetype_idx: int,
+    threshold=0.3,
+    top_n=25,
+    title=None,
+    figsize=(2.0, 5.0),
+    gene_fontsize=10,
+    axis_fontsize=9,
+    title_fontsize=11,
+    bar_height=0.55,
+    include_neg1=True,          # <- set True if UMAP had -1 in unique_clusters
+    unique_clusters=None,        # <- BEST: pass sorted(np.unique(membership_sub)) from UMAP
+):
+    col = f"archetype_{archetype_idx}"
+    if col not in W_df.columns:
+        raise KeyError(f"Column '{col}' not found in W_df.columns")
+
+    # --- determine cluster ordering exactly like plot_colocalization_modules ---
+    arch_ids = sorted(
+        int(c.split("_")[-1]) for c in W_df.columns if c.startswith("archetype_")
+    )
+
+    if unique_clusters is not None:
+        cluster_order = list(unique_clusters)
+    else:
+        cluster_order = ([-1] + arch_ids) if include_neg1 else arch_ids
+
+    palette = sns.husl_palette(n_colors=len(cluster_order))
+    color_map = {cid: palette[i] for i, cid in enumerate(cluster_order)}
+
+    if archetype_idx not in color_map:
+        raise KeyError(
+            f"archetype_idx={archetype_idx} not in color map. "
+            f"cluster_order={cluster_order[:10]}{'...' if len(cluster_order)>10 else ''}"
+        )
+
+    bar_color = color_map[archetype_idx]
+
+    # --- filter + sort genes ---
+    series = W_df[col]
+    s = series[series >= threshold].sort_values(ascending=True).tail(top_n)
+
+    genes = s.index.tolist()
+    vals  = s.values
+    y = np.arange(len(s))
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.barh(y, vals, height=bar_height, color=bar_color)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(genes, fontsize=gene_fontsize)
+
+    xmax = float(vals.max()) if len(vals) else 1.0
+    ax.set_xlim(0, xmax * 1.05)
+    ax.set_xlabel("Weight", fontsize=axis_fontsize)
+
+    if title is None:
+        title = f"A{archetype_idx} Top Genes"
+    ax.set_title(title, fontsize=title_fontsize, pad=6)
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    ax.tick_params(axis="x", labelsize=axis_fontsize)
+    ax.tick_params(axis="y", length=0)
+
+    ax.xaxis.set_ticks_position("bottom")
+    ax.grid(axis="x", linewidth=0.5, alpha=0.3)
+
+    plt.tight_layout()
+    return fig, ax
