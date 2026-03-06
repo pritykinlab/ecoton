@@ -8,6 +8,7 @@ computing niche maps, and analyzing cell distributions in selected bins.
 import numpy as np
 import pandas as pd
 from scipy import sparse
+import matplotlib.pyplot as plt
 
 def _compute_bin_id_and_grid_meta(df, bin_size, x_col, y_col, verbose=False):
     x = df[x_col].to_numpy(np.float32, copy=False)
@@ -437,3 +438,411 @@ def cells_in_selected_bins(
     if return_bin_to_cells:
         return cells_union, bin_to_cells
     return cells_union
+
+def flatten_valid(N, mask=None):
+    """
+    Flatten a 2D niche map and remove NaNs.
+    """
+    N = np.asarray(N)
+    if mask is not None:
+        x = N[mask]
+    else:
+        x = N.ravel()
+    x = x[np.isfinite(x)]
+    return x
+
+
+def _find_signal_start_index(
+    x_sorted,
+    slope_quantile=0.2,
+    min_run=25,
+    smooth_window=11,
+):
+    """
+    Find where the sorted curve begins to leave a flat baseline.
+
+    Parameters
+    ----------
+    x_sorted : np.ndarray
+        Sorted values.
+    slope_quantile : float
+        Use this quantile of positive slopes as a reference scale.
+        Smaller = earlier start, larger = later start.
+    min_run : int
+        Require at least this many consecutive points above threshold.
+    smooth_window : int
+        Simple moving-average window for slope smoothing.
+
+    Returns
+    -------
+    start_idx : int
+        Index in x_sorted where the signal begins.
+    """
+    n = len(x_sorted)
+    if n < 10:
+        return 0
+
+    # slope of sorted curve
+    dx = np.gradient(x_sorted.astype(float))
+
+    # smooth slope a bit
+    smooth_window = max(3, int(smooth_window))
+    if smooth_window % 2 == 0:
+        smooth_window += 1
+    kernel = np.ones(smooth_window) / smooth_window
+    dx_smooth = np.convolve(dx, kernel, mode="same")
+
+    # reference threshold from positive slopes
+    pos = dx_smooth[dx_smooth > 0]
+    if len(pos) == 0:
+        return 0
+
+    slope_thr = np.quantile(pos, slope_quantile)
+
+    # require a sustained run above threshold
+    above = dx_smooth > slope_thr
+
+    run = 0
+    for i, flag in enumerate(above):
+        if flag:
+            run += 1
+            if run >= min_run:
+                return max(0, i - min_run + 1)
+        else:
+            run = 0
+
+    return 0
+
+
+def _knee_on_sorted_segment(x_sorted_segment):
+    """
+    Compute knee index for a sorted 1D segment using max distance to endpoint line.
+
+    Returns
+    -------
+    knee_idx : int
+        Knee index within the provided segment.
+    xs : np.ndarray
+        Normalized x coordinate in [0, 1] for the segment.
+    ys : np.ndarray
+        Normalized y coordinate in [0, 1] for the segment.
+    dists : np.ndarray
+        Per-point distance to the endpoint line.
+    """
+    n = len(x_sorted_segment)
+    if n < 2:
+        return 0, np.array([0.0]), np.array([0.0]), np.array([0.0])
+
+    xs = np.linspace(0, 1, n)
+    ys = (x_sorted_segment - x_sorted_segment.min()) / (x_sorted_segment.max() - x_sorted_segment.min() + 1e-12)
+
+    p1 = np.array([xs[0], ys[0]])
+    p2 = np.array([xs[-1], ys[-1]])
+    line_vec = p2 - p1
+    line_vec = line_vec / (np.linalg.norm(line_vec) + 1e-12)
+
+    points = np.column_stack([xs, ys])
+    vecs = points - p1
+    proj = np.outer(np.dot(vecs, line_vec), line_vec)
+    perp = vecs - proj
+    dists = np.linalg.norm(perp, axis=1)
+
+    knee_idx = int(np.argmax(dists))
+    return knee_idx, xs, ys, dists
+
+
+def knee_from_sorted_curve(
+    N,
+    mask=None,
+    start_mode="auto",   # "auto", "zero", or integer index
+    normalize_y=False,
+    figsize=(3, 3),
+    dpi=150,
+    curve_color="#1f77b4",
+    line_color="#d62728",
+    second_line_color="#ff7f0e",
+    third_line_color="#2ca02c",
+    lw=2.2,
+    show=True,
+    ax=None,
+    slope_quantile=0.2,
+    min_run=25,
+    smooth_window=11,
+    detect_second_knee=True,
+    detect_third_knee=True,
+    third_knee_mode=0,
+):
+    """
+    Publication-style single-panel knee plot for a 2D niche map.
+
+    The knee is computed starting from the point where signal begins,
+    rather than necessarily from x > 0.
+
+    Parameters
+    ----------
+    N : np.ndarray
+        2D niche intensity map.
+    mask : np.ndarray or None
+        Optional boolean tissue mask.
+    start_mode : {"auto", "zero"} or int
+        How to choose where the knee computation starts:
+        - "auto": detect end of flat baseline using slope
+        - "zero": start at first value > 0
+        - int: explicit start index in full sorted array
+    normalize_y : bool
+        If True, plot normalized intensities in [0, 1].
+        If False, plot raw sorted intensities.
+    slope_quantile : float
+        Only used for start_mode="auto".
+    min_run : int
+        Only used for start_mode="auto".
+    smooth_window : int
+        Only used for start_mode="auto".
+
+    Returns
+    -------
+    threshold : float
+        Intensity at the first knee.
+    occupancy : float
+        Fraction of valid pixels above first-knee threshold.
+    info : dict
+        Diagnostic information, including second/third-knee fields when enabled.
+    """
+    # Full data for plotting + occupancy
+    x_all = flatten_valid(N, mask=mask)
+    if x_all.size < 10:
+        raise ValueError("Not enough valid pixels to estimate a knee.")
+
+    x_all_sorted = np.sort(x_all)
+    n_all = len(x_all_sorted)
+    xs_all = np.linspace(0, 1, n_all)
+
+    # Choose where the fit begins
+    if start_mode == "auto":
+        start_idx = _find_signal_start_index(
+            x_all_sorted,
+            slope_quantile=slope_quantile,
+            min_run=min_run,
+            smooth_window=smooth_window,
+        )
+    elif start_mode == "zero":
+        start_idx = np.searchsorted(x_all_sorted, 0.0, side="right")
+        start_idx = min(start_idx, n_all - 1)
+    elif isinstance(start_mode, (int, np.integer)):
+        start_idx = int(np.clip(start_mode, 0, n_all - 1))
+    else:
+        raise ValueError("start_mode must be 'auto', 'zero', or an integer index.")
+
+    x_fit_sorted = x_all_sorted[start_idx:]
+    if x_fit_sorted.size < 10:
+        raise ValueError("Not enough values after choosing start index to estimate a knee.")
+
+    n_fit = len(x_fit_sorted)
+    knee_idx_fit, xs_fit, ys_fit, dists = _knee_on_sorted_segment(x_fit_sorted)
+    threshold = x_fit_sorted[knee_idx_fit]
+
+    # Occupancy on all valid pixels (first knee)
+    occupancy = np.mean(x_all > threshold)
+
+    # Map first knee threshold back onto full sorted curve
+    knee_idx_all = np.searchsorted(x_all_sorted, threshold, side="left")
+    knee_idx_all = np.clip(knee_idx_all, 0, n_all - 1)
+    knee_x_all = xs_all[knee_idx_all]
+    start_x_all = xs_all[start_idx]
+
+    # Optional second knee: search from first knee to tail of fit domain
+    second_threshold = None
+    second_occupancy = None
+    second_knee_pct = None
+    second_knee_idx_fit = None
+    second_knee_idx_all = None
+    second_knee_x_all = None
+    second_dists = None
+
+    if detect_second_knee:
+        second_start_fit = knee_idx_fit
+        x_second_fit_sorted = x_fit_sorted[second_start_fit:]
+        if x_second_fit_sorted.size >= 10:
+            second_idx_local, _, _, second_dists = _knee_on_sorted_segment(x_second_fit_sorted)
+            second_knee_idx_fit = int(second_start_fit + second_idx_local)
+            second_threshold = x_fit_sorted[second_knee_idx_fit]
+            second_occupancy = np.mean(x_all > second_threshold)
+            second_knee_pct = 100 * (1 - second_occupancy)
+            second_knee_idx_all = int(np.searchsorted(x_all_sorted, second_threshold, side="left"))
+            second_knee_idx_all = int(np.clip(second_knee_idx_all, 0, n_all - 1))
+            second_knee_x_all = xs_all[second_knee_idx_all]
+
+    # Optional third knee: non-auto knee (default mode: full curve, start index 0)
+    third_threshold = None
+    third_occupancy = None
+    third_knee_pct = None
+    third_start_idx = None
+    third_knee_idx_fit = None
+    third_knee_idx_all = None
+    third_knee_x_all = None
+    third_dists = None
+
+    if detect_third_knee:
+        if third_knee_mode == "full":
+            third_start_idx = 0
+        elif third_knee_mode == "zero":
+            third_start_idx = np.searchsorted(x_all_sorted, 0.0, side="right")
+            third_start_idx = int(min(third_start_idx, n_all - 1))
+        elif isinstance(third_knee_mode, (int, np.integer)):
+            third_start_idx = int(np.clip(third_knee_mode, 0, n_all - 1))
+        else:
+            raise ValueError("third_knee_mode must be 'full', 'zero', or an integer index.")
+
+        x_third_fit_sorted = x_all_sorted[third_start_idx:]
+        if x_third_fit_sorted.size >= 10:
+            third_knee_idx_fit_local, _, _, third_dists = _knee_on_sorted_segment(x_third_fit_sorted)
+            third_knee_idx_fit = int(third_knee_idx_fit_local)
+            third_threshold = x_third_fit_sorted[third_knee_idx_fit]
+            third_occupancy = np.mean(x_all > third_threshold)
+            third_knee_pct = 100 * (1 - third_occupancy)
+            third_knee_idx_all = int(np.searchsorted(x_all_sorted, third_threshold, side="left"))
+            third_knee_idx_all = int(np.clip(third_knee_idx_all, 0, n_all - 1))
+            third_knee_x_all = xs_all[third_knee_idx_all]
+
+    # Plot values
+    if normalize_y:
+        y_all_plot = (x_all_sorted - x_all_sorted.min()) / (x_all_sorted.max() - x_all_sorted.min() + 1e-12)
+        y_label = "Normalized intensity"
+        knee_y_all = y_all_plot[knee_idx_all]
+
+        # reference line over fit domain only
+        ref_x = [start_x_all, 1.0]
+        ref_y = [0.0, 1.0]
+    else:
+        y_all_plot = x_all_sorted
+        y_label = "Intensity"
+        knee_y_all = x_all_sorted[knee_idx_all]
+
+        ref_x = [start_x_all, 1.0]
+        ref_y = [x_fit_sorted[0], x_fit_sorted[-1]]
+
+    # Create figure if needed
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        created_fig = True
+    else:
+        fig = ax.figure
+
+    # Full curve
+    ax.plot(xs_all, y_all_plot, color=curve_color, lw=lw)
+
+    # Show fit start
+    ax.axvline(start_x_all, linestyle=":", color="0.4", lw=1.2, alpha=0.9)
+
+    # Reference dotted line corresponding to fit domain
+    ax.plot(ref_x, ref_y, linestyle="--", color=line_color, lw=1.8, alpha=0.9)
+
+    # Knee guides
+    ax.axvline(knee_x_all, linestyle="--", color=line_color, lw=1.5, alpha=0.85)
+    ax.axhline(knee_y_all, linestyle="--", color=line_color, lw=1.5, alpha=0.85)
+
+    # Knee marker
+    ax.scatter(knee_x_all, knee_y_all, s=55, color=curve_color, zorder=5)
+
+    # Second knee guides/marker
+    if second_knee_idx_all is not None:
+        second_knee_y_all = y_all_plot[second_knee_idx_all]
+        ax.axvline(second_knee_x_all, linestyle="-.", color=second_line_color, lw=1.5, alpha=0.9)
+        ax.axhline(second_knee_y_all, linestyle="-.", color=second_line_color, lw=1.5, alpha=0.9)
+        ax.scatter(second_knee_x_all, second_knee_y_all, s=48, color=second_line_color, zorder=5)
+
+    # Third knee guides/marker (non-auto)
+    if third_knee_idx_all is not None:
+        third_knee_y_all = y_all_plot[third_knee_idx_all]
+        ax.axvline(third_knee_x_all, linestyle=":", color=third_line_color, lw=1.5, alpha=0.95)
+        ax.axhline(third_knee_y_all, linestyle=":", color=third_line_color, lw=1.5, alpha=0.95)
+        ax.scatter(third_knee_x_all, third_knee_y_all, s=44, color=third_line_color, zorder=5)
+
+    # Labels and title
+    ax.set_title("Sorted niche intensity distribution", fontsize=10, pad=8)
+    ax.set_xlabel("Normalized sorted index", fontsize=9)
+    ax.set_ylabel(y_label, fontsize=9)
+
+    # Cleaner style
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(axis="both", labelsize=8, width=1)
+    ax.set_box_aspect(1)
+
+    # Annotation
+    knee_pct = 100 * (1 - occupancy)
+    second_txt = ""
+    if second_threshold is not None and second_occupancy is not None:
+        second_txt = (
+            f"\n2nd knee threshold = {second_threshold:.3g}"
+            f"\n2nd-knee occupancy = {second_occupancy:.3%}"
+            f"\n2nd approx. percentile = p{second_knee_pct:.1f}"
+        )
+    third_txt = ""
+    if third_threshold is not None and third_occupancy is not None:
+        third_txt = (
+            f"\n3rd knee (non-auto) = {third_threshold:.3g}"
+            f"\n3rd-knee occupancy = {third_occupancy:.3%}"
+            f"\n3rd approx. percentile = p{third_knee_pct:.1f}"
+        )
+    txt = (
+        f"Knee threshold = {threshold:.3g}\n"
+        f"Estimated occupancy = {occupancy:.3%}\n"
+        f"Approx. percentile = p{knee_pct:.1f}\n"
+        f"Fit start = {start_idx / n_all:.3f}"
+        f"{second_txt}"
+        f"{third_txt}"
+    )
+    ax.text(
+        0.03,
+        0.97,
+        txt,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=4.8,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="0.85", alpha=0.95),
+    )
+
+    fig.tight_layout()
+
+    if show and created_fig:
+        plt.show()
+
+    info = {
+        "start_idx": start_idx,
+        "start_x_all": start_x_all,
+        "knee_index_fit": int(knee_idx_fit),
+        "knee_index_all": int(knee_idx_all),
+        "knee_x_all": knee_x_all,
+        "threshold": threshold,
+        "occupancy": occupancy,
+        "approx_percentile": knee_pct,
+        "second_knee_enabled": detect_second_knee,
+        "second_knee_index_fit": second_knee_idx_fit,
+        "second_knee_index_all": second_knee_idx_all,
+        "second_knee_x_all": second_knee_x_all,
+        "second_threshold": second_threshold,
+        "second_occupancy": second_occupancy,
+        "second_approx_percentile": second_knee_pct,
+        "third_knee_enabled": detect_third_knee,
+        "third_knee_mode": third_knee_mode,
+        "third_start_idx": third_start_idx,
+        "third_knee_index_fit": third_knee_idx_fit,
+        "third_knee_index_all": third_knee_idx_all,
+        "third_knee_x_all": third_knee_x_all,
+        "third_threshold": third_threshold,
+        "third_occupancy": third_occupancy,
+        "third_approx_percentile": third_knee_pct,
+        "x_all_sorted": x_all_sorted,
+        "xs_all": xs_all,
+        "x_fit_sorted": x_fit_sorted,
+        "xs_fit": xs_fit,
+        "ys_fit": ys_fit,
+        "distances": dists,
+        "second_distances": second_dists,
+        "third_distances": third_dists,
+    }
+
+    return threshold, occupancy, info
