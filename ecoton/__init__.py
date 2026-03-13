@@ -1,18 +1,6 @@
-# __init__.py
+from importlib import import_module
 
-from .compute_metatranscripts import ComputeMetatranscripts
-from .compute_colocalization_graph import ComputeColocalizationGraph
-from .process_colocalization_graph import ProcessColocalizationGraph
-from .statistics_niche_maps import bin_transcripts, bins_from_niche_threshold, cells_in_selected_bins, knee_from_sorted_curve
-from .analytic_metatranscripts import analytic_null_metatranscripts, stats_df_to_igraph
-from .plot_colocalization_modules import plot_colocalization_modules, plot_gene_program_from_W
-from .plot_graph_umap import compute_graph_umap, plot_graph_umap
-from .compute_niche_maps import create_niche_maps_by_archetype_all_at_once
-from .plot_niche_maps import plot_niche_continuous_and_binary
-from .plot_niche_maps import plot_niche_continuous_and_percentile_categories
-from .enrichment import enrichr_with_local_gmt
-
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 __all__ = [
     "ComputeMetatranscripts",
     "ComputeColocalizationGraph",
@@ -33,4 +21,39 @@ __all__ = [
     "create_niche_maps_by_archetype_all_at_once",
     "enrichr_with_local_gmt",
 ]
+
+_EXPORT_TO_MODULE = {
+    "ComputeMetatranscripts": ".compute_metatranscripts",
+    "ComputeColocalizationGraph": ".compute_colocalization_graph",
+    "ProcessColocalizationGraph": ".process_colocalization_graph",
+    "ComputeCellOverlaps": ".compute_cell_overlaps",
+    "bin_transcripts": ".statistics_niche_maps",
+    "bins_from_niche_threshold": ".statistics_niche_maps",
+    "cells_in_selected_bins": ".statistics_niche_maps",
+    "knee_from_sorted_curve": ".statistics_niche_maps",
+    "analytic_null_metatranscripts": ".analytic_metatranscripts",
+    "stats_df_to_igraph": ".analytic_metatranscripts",
+    "plot_colocalization_modules": ".plot_colocalization_modules",
+    "plot_gene_program_from_W": ".plot_colocalization_modules",
+    "plot_graph_umap": ".plot_graph_umap",
+    "compute_graph_umap": ".plot_graph_umap",
+    "plot_niche_continuous_and_binary": ".plot_niche_maps",
+    "plot_niche_continuous_and_percentile_categories": ".plot_niche_maps",
+    "create_niche_maps_by_archetype_all_at_once": ".compute_niche_maps",
+    "enrichr_with_local_gmt": ".enrichment",
+}
+
+
+def __getattr__(name):
+    module_path = _EXPORT_TO_MODULE.get(name)
+    if module_path is None:
+        raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+    module = import_module(module_path, __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals().keys()) | set(__all__))
 

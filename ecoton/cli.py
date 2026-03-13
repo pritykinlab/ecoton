@@ -7,16 +7,6 @@ import threading
 import time
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-
-from .analytic_metatranscripts import analytic_null_metatranscripts
-from .compute_metatranscripts import ComputeMetatranscripts
-from .compute_niche_maps import create_niche_maps_by_archetype_all_at_once
-from .plot_colocalization_modules import plot_colocalization_modules
-from .process_colocalization_graph import ProcessColocalizationGraph
-
 try:
     import psutil
 except ImportError:
@@ -127,6 +117,16 @@ def parse_args(argv=None):
 
 
 def run_workflow(args):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    from .analytic_metatranscripts import analytic_null_metatranscripts
+    from .compute_metatranscripts import ComputeMetatranscripts
+    from .compute_niche_maps import create_niche_maps_by_archetype_all_at_once
+    from .plot_colocalization_modules import plot_colocalization_modules
+    from .process_colocalization_graph import ProcessColocalizationGraph
+
     args.output_dir.mkdir(exist_ok=True, parents=True)
 
     runtime_tracking = init_runtime_tracking()
