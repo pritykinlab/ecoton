@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecoton"
-version = "0.1.0"
+version = "0.2.3"
 description = "Expression colocalization of transcripts for niche discovery"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -25,6 +25,9 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/pritykinlab/ecoton"
+
+[project.scripts]
+ecoton = "ecoton.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
