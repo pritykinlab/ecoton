@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecoton"
-version = "0.2.3"
+version = "0.2.4"
 description = "Expression colocalization of transcripts for niche discovery"
 readme = "README.md"
 license = {file = "LICENSE"}

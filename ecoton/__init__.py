@@ -1,9 +1,9 @@
 from importlib import import_module
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 __all__ = [
     "ComputeMetatranscripts",
-    "ComputeColocalizationGraph",
+    
     "ProcessColocalizationGraph",
     "ComputeCellOverlaps",
     "bin_transcripts",
@@ -11,6 +11,7 @@ __all__ = [
     "cells_in_selected_bins",
     "knee_from_sorted_curve",
     "analytic_null_metatranscripts",
+    "combine_O_matrices_stouffer",
     "stats_df_to_igraph",
     "plot_colocalization_modules",
     "plot_gene_program_from_W",
@@ -24,7 +25,7 @@ __all__ = [
 
 _EXPORT_TO_MODULE = {
     "ComputeMetatranscripts": ".compute_metatranscripts",
-    "ComputeColocalizationGraph": ".compute_colocalization_graph",
+    
     "ProcessColocalizationGraph": ".process_colocalization_graph",
     "ComputeCellOverlaps": ".compute_cell_overlaps",
     "bin_transcripts": ".statistics_niche_maps",
@@ -32,6 +33,7 @@ _EXPORT_TO_MODULE = {
     "cells_in_selected_bins": ".statistics_niche_maps",
     "knee_from_sorted_curve": ".statistics_niche_maps",
     "analytic_null_metatranscripts": ".analytic_metatranscripts",
+    "combine_O_matrices_stouffer": ".analytic_metatranscripts",
     "stats_df_to_igraph": ".analytic_metatranscripts",
     "plot_colocalization_modules": ".plot_colocalization_modules",
     "plot_gene_program_from_W": ".plot_colocalization_modules",
