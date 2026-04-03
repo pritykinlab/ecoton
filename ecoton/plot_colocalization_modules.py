@@ -272,6 +272,7 @@ def plot_gene_program_from_W(
     bar_height=0.55,
     include_neg1=True,          # <- set True if UMAP had -1 in unique_clusters
     unique_clusters=None,        # <- BEST: pass sorted(np.unique(membership_sub)) from UMAP
+    ax=None,
 ):
     col = f"archetype_{archetype_idx}"
     if col not in W_df.columns:
@@ -306,7 +307,10 @@ def plot_gene_program_from_W(
     vals  = s.values
     y = np.arange(len(s))
 
-    fig, ax = plt.subplots(figsize=figsize)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
 
     ax.barh(y, vals, height=bar_height, color=bar_color)
 

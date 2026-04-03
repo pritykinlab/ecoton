@@ -105,9 +105,20 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--organism", type=str, default="Human")
     parser.add_argument("--bin-size", type=float, default=8.0)
-    parser.add_argument("--smoothing-radius", type=float, default=8.0)
+    parser.add_argument("--smoothing-radius", type=float, default=4.0)
     parser.add_argument("--weight-threshold", type=float, default=0.3)
     parser.add_argument("--min-points", "--min_points", dest="min_points", type=int, default=3)
+    parser.add_argument(
+        "--colocalization-response-pkl",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to a precomputed colocalization response pickle. "
+            "If provided, this is used instead of running ProcessColocalizationGraph. "
+            "The pickle can be either the colocalization_response dict itself or a workflow "
+            "pickle containing key 'colocalization_response'."
+        ),
+    )
     parser.add_argument(
         "--save-module-plot",
         action="store_true",
@@ -122,7 +133,7 @@ def run_workflow(args):
     import pandas as pd
 
     from .analytic_metatranscripts import analytic_null_metatranscripts
-    from .compute_metatranscripts import ComputeMetatranscripts
+    from .compute_metatranscripts import ComputeMetatranscripts, prepare_transcripts
     from .compute_niche_maps import create_niche_maps_by_archetype_all_at_once
     from .plot_colocalization_modules import plot_colocalization_modules
     from .process_colocalization_graph import ProcessColocalizationGraph
@@ -146,39 +157,72 @@ def run_workflow(args):
         args.transcripts_path,
     )
 
-    print("Computing metatranscripts")
-    results = run_timed(
-        runtime_tracking,
-        "compute_metatranscripts",
-        ComputeMetatranscripts,
-        transcripts_df,
-        mode=args.mode,
-        min_points=args.min_points,
-    )
+    if args.colocalization_response_pkl is None:
+        print("Computing metatranscripts")
+        results = run_timed(
+            runtime_tracking,
+            "compute_metatranscripts",
+            ComputeMetatranscripts,
+            transcripts_df,
+            mode=args.mode,
+            min_points=args.min_points,
+        )
 
-    print("Computing analytic null metatranscripts")
-    analytic_response = run_timed(
-        runtime_tracking,
-        "analytic_null_metatranscripts",
-        analytic_null_metatranscripts,
-        results["metatranscripts"],
-        gene_col_meta=results["gene_name"],
-        verbose=True,
-    )
+        print("Computing analytic null metatranscripts")
+        analytic_response = run_timed(
+            runtime_tracking,
+            "analytic_null_metatranscripts",
+            analytic_null_metatranscripts,
+            results["metatranscripts"],
+            gene_col_meta=results["gene_name"],
+            verbose=True,
+        )
 
-    print("Processing colocalization graph")
-    colocalization_response = run_timed(
-        runtime_tracking,
-        "process_colocalization_graph",
-        ProcessColocalizationGraph,
-        G_ig=analytic_response[2],
-        K=args.k,
-        seed=args.seed,
-        run_enrich=True,
-        organism=args.organism,
-    )
+        print("Processing colocalization graph")
+        colocalization_response = run_timed(
+            runtime_tracking,
+            "process_colocalization_graph",
+            ProcessColocalizationGraph,
+            G_ig=analytic_response[2],
+            K=args.k,
+            seed=args.seed,
+            run_enrich=True,
+            organism=args.organism,
+        )
+    else:
+        print("Preparing transcripts (skipping ComputeMetatranscripts)")
+        results = run_timed(
+            runtime_tracking,
+            "prepare_transcripts",
+            prepare_transcripts,
+            transcripts_df,
+            mode=args.mode,
+        )
 
-    if args.save_module_plot:
+        analytic_response = None
+
+        print(f"Loading custom colocalization response: {args.colocalization_response_pkl}")
+        with args.colocalization_response_pkl.open("rb") as f:
+            loaded = pickle.load(f)
+
+        if isinstance(loaded, dict) and "W_df" in loaded:
+            colocalization_response = loaded
+        elif (
+            isinstance(loaded, dict)
+            and "colocalization_response" in loaded
+            and isinstance(loaded["colocalization_response"], dict)
+        ):
+            colocalization_response = loaded["colocalization_response"]
+        else:
+            raise ValueError(
+                "Invalid --colocalization-response-pkl contents. Expected either a dict with key 'W_df' "
+                "or a workflow dict containing 'colocalization_response' with key 'W_df'."
+            )
+
+        if "W_df" not in colocalization_response:
+            raise ValueError("Loaded colocalization_response is missing required key 'W_df'.")
+
+    if args.save_module_plot and analytic_response is not None:
         print("Saving module plot")
         module_labels = np.arange(args.k).astype(str).tolist()
         nums = list(range(args.k))
@@ -191,6 +235,11 @@ def run_workflow(args):
         fig = ax.figure
         fig.savefig(args.output_dir / "selected_archetypal_modules.png", dpi=200, bbox_inches="tight")
         plt.close(fig)
+    elif args.save_module_plot and analytic_response is None:
+        print(
+            "Skipping module plot: --colocalization-response-pkl was provided, "
+            "so analytic graph was not computed in this run."
+        )
 
     transcripts = results["filtered_transcripts"]
     coords = transcripts[[results["x_coord"], results["y_coord"]]].values.astype(np.float32)

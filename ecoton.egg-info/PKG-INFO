@@ -76,7 +76,7 @@ ecoton \
 - `--organism` (default: `Human`)
 - `--min-points` (default: `3`)
 - `--bin-size` (default: `8.0`)
-- `--smoothing-radius` (default: `8.0`)
+- `--smoothing-radius` (default: `4.0`)
 - `--weight-threshold` (default: `0.3`)
 - `--save-module-plot` to save selected module visualization
 

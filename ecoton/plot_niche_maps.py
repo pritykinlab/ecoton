@@ -17,6 +17,7 @@ def plot_niche_continuous_and_binary(
     threshold: Any = "p95",   # "p95" default, or give a numeric value like 1.5
     p: float = 99.5,
     cmap_cont: str = "RdBu_r",
+    ax=None,
 ) -> plt.Figure:
     """Plot continuous and binary versions of a niche map slice.
 
@@ -70,7 +71,13 @@ def plot_niche_continuous_and_binary(
     # binarize (True where M >= threshold)
     B = (M >= t)
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+    if ax is None:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+    else:
+        if not isinstance(ax, (list, tuple, np.ndarray)) or len(ax) != 2:
+            raise ValueError("ax must be None or a sequence of two matplotlib Axes for this function")
+        axes = ax
+        fig = axes[0].figure
 
     im0 = axes[0].imshow(M, cmap=cmap_cont, vmin=-v, vmax=v)
     axes[0].set_title(f"Niche {k} (continuous)")
@@ -97,6 +104,147 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 
+def plot_niche_continuous_only(
+    niche_maps,
+    k=0,
+    p=99.5,
+    cmap_cont="RdBu_r",
+    module_labels=None,
+    ax=None,
+):
+    M = niche_maps[:, :, k]
+
+    v = np.nanpercentile(np.abs(M), p)
+    if not np.isfinite(v) or v == 0:
+        vmax = np.nanmax(np.abs(M))
+        v = vmax if vmax != 0 else 1.0
+
+    if module_labels is not None and k in module_labels:
+        title_suffix = f"{k}: {module_labels[k]}"
+    else:
+        title_suffix = f"{k}"
+
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 4), constrained_layout=True)
+    else:
+        fig = ax.figure
+
+    im = ax.imshow(
+        M,
+        cmap=cmap_cont,
+        vmin=-v,
+        vmax=v,
+        interpolation="bilinear",
+    )
+    ax.set_title(f"Niche {title_suffix} (continuous)")
+    ax.axis("off")
+
+    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cb.set_label(f"Intensity (±p{p})")
+
+    return fig
+
+
+def plot_niche_percentile_categories_only(
+    niche_maps,
+    k=0,
+    percentiles=(90, 95, 98, 99),
+    cat_colors=("#6baed6", "#fd8d3c", "#de2d26", "#67000d"),
+    module_labels=None,
+    show_percentile_legend=True,
+    legend_show_thresholds=False,
+    ax=None,
+):
+    M = niche_maps[:, :, k]
+
+    percentiles = sorted(percentiles)
+    thresholds = [np.nanpercentile(M, q) for q in percentiles]
+
+    C = np.zeros_like(M, dtype=int)
+    for i, t in enumerate(thresholds):
+        C[M >= t] = i + 1
+
+    cmap_cat = ListedColormap(["white", *cat_colors])
+    norm = BoundaryNorm(range(len(cat_colors) + 2), cmap_cat.N)
+
+    if module_labels is not None and k in module_labels:
+        title_suffix = f"{k}: {module_labels[k]}"
+    else:
+        title_suffix = f"{k}"
+
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 4), constrained_layout=True)
+    else:
+        fig = ax.figure
+
+    ax.imshow(
+        C,
+        cmap=cmap_cat,
+        norm=norm,
+        interpolation="nearest",
+    )
+    ax.set_title(f"Niche {title_suffix} (percentile categories)")
+    ax.axis("off")
+
+    p0 = percentiles[0]
+    p_edges = list(percentiles) + [100]
+    widths = np.diff(p_edges)
+
+    N = 800
+    counts = np.maximum(1, (widths / widths.sum() * N).astype(int))
+    counts[-1] += (N - counts.sum())
+
+    strip = np.concatenate([np.full(c, i, dtype=int) for i, c in enumerate(counts)])[:, None]
+    strip_cmap = ListedColormap(list(cat_colors))
+
+    if show_percentile_legend:
+        cax = inset_axes(
+            ax,
+            width="4%",
+            height="85%",
+            loc="lower left",
+            bbox_to_anchor=(1.02, 0.08, 1, 1),
+            bbox_transform=ax.transAxes,
+            borderpad=0,
+        )
+
+        cax.imshow(
+            strip,
+            aspect="auto",
+            cmap=strip_cmap,
+            interpolation="nearest",
+            extent=(0, 1, p0, 100),
+            origin="lower",
+        )
+
+        cax.set_xticks([])
+        cax.set_yticks(percentiles)
+
+        if legend_show_thresholds:
+            ticklabels = [f"p{q}\n{t:.3g}" for q, t in zip(percentiles, thresholds)]
+        else:
+            ticklabels = [f"p{q}" for q in percentiles]
+
+        cax.set_yticklabels(ticklabels, fontsize=8)
+        cax.yaxis.tick_right()
+        cax.yaxis.set_label_position("right")
+        cax.tick_params(
+            axis="y",
+            right=True,
+            left=False,
+            labelright=True,
+            labelleft=False,
+            length=4,
+            width=1,
+            pad=3,
+        )
+
+        for spine in cax.spines.values():
+            spine.set_visible(True)
+
+    return fig
+
+
 def plot_niche_continuous_and_percentile_categories(
     niche_maps,
     k=0,
@@ -105,7 +253,9 @@ def plot_niche_continuous_and_percentile_categories(
     cmap_cont="RdBu_r",
     cat_colors=("#6baed6", "#fd8d3c", "#de2d26", "#67000d"),
     module_labels=None,
+    show_percentile_legend=True,
     legend_show_thresholds=False,
+    ax=None,
 ):
     M = niche_maps[:, :, k]
 
@@ -126,7 +276,13 @@ def plot_niche_continuous_and_percentile_categories(
     cmap_cat = ListedColormap(["white", *cat_colors])
     norm = BoundaryNorm(range(len(cat_colors) + 2), cmap_cat.N)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
+    if ax is None:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True)
+    else:
+        if not isinstance(ax, (list, tuple, np.ndarray)) or len(ax) != 2:
+            raise ValueError("ax must be None or a sequence of two matplotlib Axes for this function")
+        axes = ax
+        fig = axes[0].figure
 
     # ---- Title handling
     if module_labels is not None and k in module_labels:
@@ -182,54 +338,55 @@ def plot_niche_continuous_and_percentile_categories(
     strip_cmap = ListedColormap(list(cat_colors))
     
     # ---- Place bar directly to the RIGHT of categorical plot
-    cax = inset_axes(
-        axes[1],
-        width="4%",           # thin vertical bar
-        height="85%",         # match plot height visually
-        loc="lower left",
-        bbox_to_anchor=(1.02, 0.08, 1, 1),   # push just outside plot
-        bbox_transform=axes[1].transAxes,
-        borderpad=0,
-    )
-    
-    cax.imshow(
-        strip,
-        aspect="auto",
-        cmap=strip_cmap,
-        interpolation="nearest",
-        extent=(0, 1, p0, 100),  # y-axis now in percentile units
-        origin="lower",
-    )
-    
-    # ticks on RIGHT side instead of left
-    cax.set_xticks([])
-    cax.set_yticks(percentiles)
-    
-    if legend_show_thresholds:
-        ticklabels = [
-            f"p{q}\n{t:.3g}" for q, t in zip(percentiles, thresholds)
-        ]
-    else:
-        ticklabels = [f"p{q}" for q in percentiles]
-    
-    cax.set_yticklabels(ticklabels, fontsize=8)
-    
-    # ---- KEY CHANGE
-    cax.yaxis.tick_right()
-    cax.yaxis.set_label_position("right")
-    
-    cax.tick_params(
-        axis="y",
-        right=True,
-        left=False,
-        labelright=True,
-        labelleft=False,
-        length=4,
-        width=1,
-        pad=3,
-    )
-    
-    for spine in cax.spines.values():
-        spine.set_visible(True)
+    if show_percentile_legend:
+        cax = inset_axes(
+            axes[1],
+            width="4%",           # thin vertical bar
+            height="85%",         # match plot height visually
+            loc="lower left",
+            bbox_to_anchor=(1.02, 0.08, 1, 1),   # push just outside plot
+            bbox_transform=axes[1].transAxes,
+            borderpad=0,
+        )
+        
+        cax.imshow(
+            strip,
+            aspect="auto",
+            cmap=strip_cmap,
+            interpolation="nearest",
+            extent=(0, 1, p0, 100),  # y-axis now in percentile units
+            origin="lower",
+        )
+        
+        # ticks on RIGHT side instead of left
+        cax.set_xticks([])
+        cax.set_yticks(percentiles)
+        
+        if legend_show_thresholds:
+            ticklabels = [
+                f"p{q}\n{t:.3g}" for q, t in zip(percentiles, thresholds)
+            ]
+        else:
+            ticklabels = [f"p{q}" for q in percentiles]
+        
+        cax.set_yticklabels(ticklabels, fontsize=8)
+        
+        cax.yaxis.tick_right()
+        cax.yaxis.set_label_position("right")
+        
+        cax.tick_params(
+            axis="y",
+            right=True,
+            left=False,
+            labelright=True,
+            labelleft=False,
+            length=4,
+            width=1,
+            pad=3,
+        )
+        
+        for spine in cax.spines.values():
+            spine.set_visible(True)
 
     plt.show()
+    return fig

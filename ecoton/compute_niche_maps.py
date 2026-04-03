@@ -14,7 +14,7 @@ def create_niche_maps_by_archetype_all_at_once(
     gene_labels,        # (N,) array-like of str (gene name for each transcript)
     W,                  # pandas.DataFrame: index=gene labels, columns=archetypes
     bin_size=8.0,
-    smoothing_radius=8.0,
+    smoothing_radius=4.0,
     weight_threshold=0.3,
     union_driver_genes=True,   # if True, only compute maps for genes used by any archetype
     eps=1e-9,
