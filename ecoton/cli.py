@@ -135,7 +135,7 @@ def run_workflow(args):
     from .analytic_metatranscripts import analytic_null_metatranscripts
     from .compute_metatranscripts import ComputeMetatranscripts, prepare_transcripts
     from .compute_niche_maps import create_niche_maps_by_archetype_all_at_once
-    from .plot_colocalization_modules import plot_colocalization_modules
+    from .plot_colocalization_modules import plot_modules
     from .process_colocalization_graph import ProcessColocalizationGraph
 
     args.output_dir.mkdir(exist_ok=True, parents=True)
@@ -226,7 +226,7 @@ def run_workflow(args):
         print("Saving module plot")
         module_labels = np.arange(args.k).astype(str).tolist()
         nums = list(range(args.k))
-        ax = plot_colocalization_modules(
+        ax = plot_modules(
             analytic_response[2],
             module_labels,
             nums,

@@ -16,7 +16,7 @@ from adjustText import adjust_text
 import textwrap
 
 
-def plot_colocalization_modules(
+def plot_modules(
     G_ig,
     module_labels,  # <-- can be dict {module_id: label} OR list (see below)
     myclusters=None,
@@ -259,6 +259,7 @@ def plot_colocalization_modules(
 
     return ax
 
+
 def plot_gene_program_from_W(
     W_df,
     archetype_idx: int,
@@ -278,7 +279,7 @@ def plot_gene_program_from_W(
     if col not in W_df.columns:
         raise KeyError(f"Column '{col}' not found in W_df.columns")
 
-    # --- determine cluster ordering exactly like plot_colocalization_modules ---
+    # --- determine cluster ordering exactly like plot_modules ---
     arch_ids = sorted(
         int(c.split("_")[-1]) for c in W_df.columns if c.startswith("archetype_")
     )

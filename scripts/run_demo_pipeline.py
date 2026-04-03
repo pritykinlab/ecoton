@@ -26,7 +26,7 @@ from ecoton import (
     bin_transcripts,
     bins_from_niche_threshold,
     cells_in_selected_bins,
-    plot_colocalization_modules,
+    plot_modules,
 )
 
 from ecoton.compute_niche_maps import create_niche_maps_by_archetype_all_at_once
@@ -168,7 +168,7 @@ def main():
 
     print('Plotting colocalization modules (using simple archetype labels)...')
     arche_labels = [f'Archetype {i}' for i in range(Z_df.shape[1])] if Z_df is not None else [f'Archetype {i}' for i in range(5)]
-    ax = plot_colocalization_modules(G_ig, arche_labels, myclusters=list(range(len(arche_labels))))
+    ax = plot_modules(G_ig, arche_labels, myclusters=list(range(len(arche_labels))))
     # show the plot if running interactively
     try:
         import matplotlib.pyplot as plt
