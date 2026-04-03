@@ -411,6 +411,135 @@ def bins_from_niche_threshold(
     return selected_bin_ids, mask, t
 
 
+def bins_from_niche_threshold_with_support(
+    niche_maps,
+    grid_meta,
+    binning_output,
+    gene_list,
+    k=0,
+    threshold="p80",
+    min_gene_types=2,
+    min_gene_transcripts=5,
+    case_sensitive=True,
+    return_support_table=False,
+):
+    """
+    Threshold a niche map and keep only bins with sufficient support
+    from a provided gene list.
+
+    Requires ``binning_output`` from ``bin_transcripts(..., return_matrix=True)``.
+
+    Support criteria per bin (for transcripts whose gene is in gene_list):
+    - at least ``min_gene_types`` unique genes
+    - at least ``min_gene_transcripts`` total transcripts
+
+    Returns
+    -------
+    selected_bin_ids_supported : np.ndarray[int64]
+        Original bin_id values (y*width+x) that pass niche threshold and support checks.
+    mask_supported : np.ndarray[bool]
+        (H,W) boolean mask for supported selected bins.
+    t : float
+        Numeric niche threshold used.
+    support_table : pd.DataFrame, optional
+        Returned only when ``return_support_table=True``. Indexed by selected bin_id with
+        columns: n_gene_types, n_gene_transcripts, passes_support.
+    """
+    selected_bin_ids, mask, t = bins_from_niche_threshold(
+        niche_maps=niche_maps,
+        grid_meta=grid_meta,
+        k=k,
+        threshold=threshold,
+    )
+
+    if min_gene_types < 1:
+        raise ValueError("min_gene_types must be >= 1")
+    if min_gene_transcripts < 1:
+        raise ValueError("min_gene_transcripts must be >= 1")
+
+    if binning_output is None:
+        raise ValueError("binning_output must not be None")
+    if gene_list is None:
+        raise ValueError("gene_list must not be None")
+    gene_list = list(gene_list)
+    if len(gene_list) == 0:
+        raise ValueError("gene_list must contain at least one gene")
+
+    if "X" not in binning_output or "bin_index" not in binning_output or "gene_names" not in binning_output:
+        raise ValueError(
+            "binning_output must contain keys 'X', 'bin_index', and 'gene_names'. "
+            "Pass the output of bin_transcripts(..., return_matrix=True)."
+        )
+
+    width = int(grid_meta["width"])
+
+    if case_sensitive:
+        gene_set = set(gene_list)
+    else:
+        gene_set = {str(g).upper() for g in gene_list}
+
+    support_table = pd.DataFrame(index=pd.Index(selected_bin_ids, name="bin_id"))
+    support_table["n_gene_types"] = 0
+    support_table["n_gene_transcripts"] = 0
+
+    X = binning_output["X"]
+    bin_index = np.asarray(binning_output["bin_index"], dtype=np.int64)
+    gene_names = np.asarray(binning_output["gene_names"])
+
+    if case_sensitive:
+        gene_name_mask = np.isin(gene_names, list(gene_set))
+    else:
+        gene_name_mask = np.isin(np.asarray([str(g).upper() for g in gene_names]), list(gene_set))
+
+    if np.any(gene_name_mask) and selected_bin_ids.size > 0:
+        selected_bin_ids_arr = np.asarray(selected_bin_ids, dtype=np.int64)
+
+        order = np.argsort(bin_index)
+        bin_sorted = bin_index[order]
+        pos = np.searchsorted(bin_sorted, selected_bin_ids_arr)
+        in_range = pos < bin_sorted.size
+        found = np.zeros(selected_bin_ids_arr.size, dtype=bool)
+        found[in_range] = (bin_sorted[pos[in_range]] == selected_bin_ids_arr[in_range])
+
+        n_gene_types = np.zeros(selected_bin_ids_arr.size, dtype=np.int64)
+        n_gene_transcripts = np.zeros(selected_bin_ids_arr.size, dtype=np.int64)
+
+        if np.any(found):
+            row_idx = order[pos[found]]
+            X_sub = X[row_idx][:, gene_name_mask]
+            if sparse.issparse(X_sub):
+                n_gene_transcripts[found] = np.asarray(X_sub.sum(axis=1)).ravel().astype(np.int64)
+                n_gene_types[found] = np.asarray((X_sub > 0).sum(axis=1)).ravel().astype(np.int64)
+            else:
+                n_gene_transcripts[found] = np.sum(X_sub, axis=1).astype(np.int64)
+                n_gene_types[found] = np.sum(X_sub > 0, axis=1).astype(np.int64)
+
+        support_table["n_gene_types"] = n_gene_types
+        support_table["n_gene_transcripts"] = n_gene_transcripts
+
+    support_table = support_table.fillna(0)
+    support_table["n_gene_types"] = support_table["n_gene_types"].astype(np.int64)
+    support_table["n_gene_transcripts"] = support_table["n_gene_transcripts"].astype(np.int64)
+
+    support_table["passes_support"] = (
+        (support_table["n_gene_types"] >= int(min_gene_types))
+        & (support_table["n_gene_transcripts"] >= int(min_gene_transcripts))
+    )
+
+    pass_mask = support_table["passes_support"].to_numpy(dtype=bool)
+    selected_bin_ids_supported = np.asarray(selected_bin_ids, dtype=np.int64)[pass_mask]
+
+    mask_supported = np.zeros_like(mask, dtype=bool)
+    if selected_bin_ids_supported.size > 0:
+        ys = selected_bin_ids_supported // width
+        xs = selected_bin_ids_supported % width
+        mask_supported[ys, xs] = True
+
+    if return_support_table:
+        return selected_bin_ids_supported, mask_supported, t, support_table
+    return selected_bin_ids_supported, mask_supported, t
+
+
 def cells_in_selected_bins(
     selected_bin_ids,
     cells_by_bin,

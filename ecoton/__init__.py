@@ -1,6 +1,6 @@
 from importlib import import_module
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 __all__ = [
     "ComputeMetatranscripts",
     
@@ -8,6 +8,7 @@ __all__ = [
     "ComputeCellOverlaps",
     "bin_transcripts",
     "bins_from_niche_threshold",
+    "bins_from_niche_threshold_with_support",
     "cells_in_selected_bins",
     "knee_from_sorted_curve",
     "analytic_null_metatranscripts",
@@ -32,6 +33,7 @@ _EXPORT_TO_MODULE = {
     "ComputeCellOverlaps": ".compute_cell_overlaps",
     "bin_transcripts": ".statistics_niche_maps",
     "bins_from_niche_threshold": ".statistics_niche_maps",
+    "bins_from_niche_threshold_with_support": ".statistics_niche_maps",
     "cells_in_selected_bins": ".statistics_niche_maps",
     "knee_from_sorted_curve": ".statistics_niche_maps",
     "analytic_null_metatranscripts": ".analytic_metatranscripts",
