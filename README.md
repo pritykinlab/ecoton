@@ -1,5 +1,18 @@
-# Ecoton
-Expression colocalization of transcripts for niche discovery
+<p align="center">
+  <img src="Ecoton_Logo.svg" width="250">
+</p>
+
+<h1 align="center">Ecoton</h1>
+
+<p align="center">
+  Expression colocalization of transcripts for niche discovery.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.9+-blue">
+  <img src="https://img.shields.io/badge/status-active-success">
+  <img src="https://img.shields.io/badge/license-MIT-green">
+</p>
 
 ## CLI workflow
 
