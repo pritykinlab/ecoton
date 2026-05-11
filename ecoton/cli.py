@@ -105,7 +105,7 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--organism", type=str, default="Human")
     parser.add_argument("--bin-size", type=float, default=8.0)
-    parser.add_argument("--smoothing-radius", type=float, default=4.0)
+    parser.add_argument("--smoothing-radius", type=float, default=8.0)
     parser.add_argument("--weight-threshold", type=float, default=0.3)
     parser.add_argument("--min-points", "--min_points", dest="min_points", type=int, default=3)
     parser.add_argument(
