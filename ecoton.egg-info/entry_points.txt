@@ -1,2 +1,0 @@
-[console_scripts]
-ecoton = ecoton.cli:main
