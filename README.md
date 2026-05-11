@@ -30,9 +30,13 @@ The workflow is as follows:
 
 To install, run `pip install .` in this repository after cloning it.
 
+## Quick Start Tutorial
+
+Refer to `scripts/ecoton_quick_start_tutorial_lymph.ipynb` for a tutorial on using Ecoton for a public Xenium 5K human lymph node dataset. 
+
 ## CLI workflow
 
-Ecoton can be run directly from a command-line workflow.
+Ecoton can also be run directly from a command-line workflow. The following combines all steps of Ecoton before downstream analyses.
 
 ### Run as installed command
 
