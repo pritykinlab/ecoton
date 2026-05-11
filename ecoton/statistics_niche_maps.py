@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgb, to_hex
 
 def _compute_bin_id_and_grid_meta(df, bin_size, x_col, y_col, verbose=False):
     x = df[x_col].to_numpy(np.float32, copy=False)
@@ -568,6 +569,228 @@ def cells_in_selected_bins(
         return cells_union, bin_to_cells
     return cells_union
 
+def _geojson_to_shapely(gj, feature_index=0):
+    """Convert a parsed GeoJSON dict to a shapely geometry."""
+    try:
+        import shapely.geometry as sg
+    except ImportError:
+        raise ImportError("shapely is required. Install with: pip install shapely")
+
+    gj_type = gj.get("type", "")
+    if gj_type == "FeatureCollection":
+        features = gj.get("features", [])
+        if not features:
+            raise ValueError("GeoJSON FeatureCollection has no features.")
+        if feature_index >= len(features):
+            raise ValueError(
+                f"feature_index={feature_index} is out of range "
+                f"(FeatureCollection has {len(features)} features)."
+            )
+        geom = features[feature_index].get("geometry")
+        if geom is None:
+            raise ValueError(f"Feature at index {feature_index} has no geometry.")
+    elif gj_type == "Feature":
+        geom = gj.get("geometry")
+        if geom is None:
+            raise ValueError("GeoJSON Feature has no geometry.")
+    else:
+        geom = gj  # assume it is already a geometry object
+
+    return sg.shape(geom)
+
+
+def _parse_polygon_input(polygon, feature_index=0):
+    """Parse polygon input from a GeoJSON file path, dict, or coordinate array."""
+    try:
+        import shapely.geometry as sg
+    except ImportError:
+        raise ImportError("shapely is required. Install with: pip install shapely")
+
+    import json
+
+    # shapely geometry passed directly (handles holes, MultiPolygon, etc.)
+    if hasattr(polygon, "geom_type"):
+        return polygon
+
+    if isinstance(polygon, str):
+        with open(polygon, "r") as f:
+            gj = json.load(f)
+        return _geojson_to_shapely(gj, feature_index=feature_index)
+    elif isinstance(polygon, dict):
+        return _geojson_to_shapely(polygon, feature_index=feature_index)
+    else:
+        coords = np.asarray(polygon, dtype=np.float64)
+        if coords.ndim != 2 or coords.shape[1] != 2:
+            raise ValueError(
+                "polygon as array-like must have shape (N, 2) with columns [x, y]."
+            )
+        return sg.Polygon(coords)
+
+
+def bins_in_polygon(
+    polygon,
+    grid_meta,
+    bin_size,
+    bin_ids=None,
+    use_bin_center=True,
+    feature_index=0,
+    x_offset=0.0,
+    y_offset=0.0,
+    scale=1.0,
+    verbose=False,
+):
+    """
+    Return bin IDs whose representative point falls inside a polygon.
+
+    Parameters
+    ----------
+    polygon : str, dict, or array-like
+        Polygon specification. Accepted forms:
+
+        - **str** – path to a GeoJSON file.
+        - **dict** – parsed GeoJSON object (Polygon geometry, Feature, or
+          FeatureCollection).
+        - **array-like of shape (N, 2)** – (x, y) coordinate pairs defining
+          the polygon ring. Coordinates must be in the same space as the
+          transcript data.
+
+    grid_meta : dict
+        Grid metadata returned by ``bin_transcripts`` (keys: ``x_min``,
+        ``y_min``, ``width``, ``height``).
+    bin_size : float
+        Bin size (spatial units) used when calling ``bin_transcripts``.
+    bin_ids : array-like or None, default None
+        Restrict the search to this subset of bin IDs (e.g. the
+        ``bin_index`` array from ``bin_transcripts``). If ``None``, every
+        bin in the full grid is tested.
+    use_bin_center : bool, default True
+        If ``True``, test the geometric centre of each bin.
+        If ``False``, test the lower-left corner of each bin.
+    feature_index : int, default 0
+        When *polygon* is a FeatureCollection, selects which feature to use.
+    x_offset : float, default 0.0
+        Shift added to polygon x coordinates *before* scaling.
+        Use to align annotations drawn in a different origin (e.g. full-slide
+        pixel space) to the transcript coordinate origin.
+    y_offset : float, default 0.0
+        Shift added to polygon y coordinates *before* scaling.
+    scale : float or (sx, sy), default 1.0
+        Scale factor applied *after* the offset. Pass a single float to scale
+        both axes equally, or a ``(sx, sy)`` tuple for anisotropic scaling.
+        Example: if the polygon was drawn in pixels and transcripts are in
+        microns with pixel_size=0.2125 µm/px, use ``scale=0.2125``.
+        The full transform applied to polygon coordinates is:
+        ``x_new = (x_poly + x_offset) * sx``
+        ``y_new = (y_poly + y_offset) * sy``
+
+    Returns
+    -------
+    selected_bin_ids : np.ndarray[int64]
+        Bin IDs (``gy * width + gx``) whose representative point lies inside
+        the polygon.
+
+    Notes
+    -----
+    Requires `shapely <https://shapely.readthedocs.io/>`_. Install with::
+
+        pip install shapely
+
+    The polygon coordinates must be in the same coordinate system as the
+    ``x_location`` / ``y_location`` columns passed to ``bin_transcripts``.
+
+    Examples
+    --------
+    >>> result = bin_transcripts(df, bin_size=8.0, return_matrix=True)
+    >>> inside = bins_in_polygon(
+    ...     "region.geojson",
+    ...     grid_meta=result["grid_meta"],
+    ...     bin_size=8.0,
+    ...     bin_ids=result["bin_index"],
+    ... )
+    >>> cells = cells_in_selected_bins(inside, result["cells_by_bin"])
+    """
+    try:
+        import shapely
+        import shapely.geometry as sg
+    except ImportError:
+        raise ImportError(
+            "shapely is required for bins_in_polygon. "
+            "Install it with:  pip install shapely"
+        )
+
+    poly_geom = _parse_polygon_input(polygon, feature_index=feature_index)
+
+    # Apply optional coordinate transform: new = (old + offset) * scale
+    if x_offset != 0.0 or y_offset != 0.0 or scale != 1.0:
+        import shapely.affinity as _sa
+        if isinstance(scale, (list, tuple)):
+            sx, sy = float(scale[0]), float(scale[1])
+        else:
+            sx = sy = float(scale)
+        if x_offset != 0.0 or y_offset != 0.0:
+            poly_geom = _sa.translate(poly_geom, xoff=float(x_offset), yoff=float(y_offset))
+        if sx != 1.0 or sy != 1.0:
+            poly_geom = _sa.scale(poly_geom, xfact=sx, yfact=sy, origin=(0, 0))
+        if verbose:
+            print(f"[bins_in_polygon] applied transform: offset=({x_offset}, {y_offset}), scale=({sx}, {sy})")
+
+    x_min = float(grid_meta["x_min"])
+    y_min = float(grid_meta["y_min"])
+    width = int(grid_meta["width"])
+    height = int(grid_meta["height"])
+
+    if verbose:
+        px_min, py_min, px_max, py_max = poly_geom.bounds
+        grid_x_max = x_min + width * bin_size
+        grid_y_max = y_min + height * bin_size
+        print("[bins_in_polygon] polygon bounds (x_min, y_min, x_max, y_max):")
+        print(f"  x: [{px_min:.3f}, {px_max:.3f}]")
+        print(f"  y: [{py_min:.3f}, {py_max:.3f}]")
+        print(f"[bins_in_polygon] grid spatial extent:")
+        print(f"  x: [{x_min:.3f}, {grid_x_max:.3f}]")
+        print(f"  y: [{y_min:.3f}, {grid_y_max:.3f}]")
+        x_overlap = px_min < grid_x_max and px_max > x_min
+        y_overlap = py_min < grid_y_max and py_max > y_min
+        print(f"[bins_in_polygon] overlap check: x={x_overlap}, y={y_overlap}")
+        if not (x_overlap and y_overlap):
+            print("  WARNING: polygon does not overlap grid extent — expect empty result")
+            print("  Hint: check for coordinate system mismatch or y-axis flip")
+
+    if bin_ids is None:
+        candidate_bin_ids = np.arange(width * height, dtype=np.int64)
+    else:
+        candidate_bin_ids = np.asarray(bin_ids, dtype=np.int64)
+
+    gx = (candidate_bin_ids % width).astype(np.float64)
+    gy = (candidate_bin_ids // width).astype(np.float64)
+
+    offset = 0.5 if use_bin_center else 0.0
+    x_coords = x_min + (gx + offset) * bin_size
+    y_coords = y_min + (gy + offset) * bin_size
+
+    if verbose:
+        print(f"[bins_in_polygon] candidate bins: {candidate_bin_ids.size}")
+        print(f"  bin x_coords range: [{x_coords.min():.3f}, {x_coords.max():.3f}]")
+        print(f"  bin y_coords range: [{y_coords.min():.3f}, {y_coords.max():.3f}]")
+
+    # shapely 2.x: vectorised and fast
+    if hasattr(shapely, "contains_xy"):
+        inside = shapely.contains_xy(poly_geom, x_coords, y_coords)
+    else:
+        # shapely 1.x fallback: prepared geometry for speed
+        from shapely.prepared import prep
+        prepared_poly = prep(poly_geom)
+        inside = np.array(
+            [prepared_poly.contains(sg.Point(x, y)) for x, y in zip(x_coords, y_coords)],
+            dtype=bool,
+        )
+
+    if verbose:
+        print(f"[bins_in_polygon] bins inside polygon: {inside.sum()} / {inside.size}")
+
+    return candidate_bin_ids[inside]
+
+
 def flatten_valid(N, mask=None):
     """
     Flatten a 2D niche map and remove NaNs.
@@ -680,6 +903,38 @@ def _knee_on_sorted_segment(x_sorted_segment):
     return knee_idx, xs, ys, dists
 
 
+def _right_distance_fraction_index(dists, peak_idx, distance_fraction=0.9):
+    """
+    Find a right-side boundary of a knee distance peak at a target fraction.
+
+    This gives a conservative threshold downstream of the main knee without
+    choosing an arbitrary percentile delta.
+    """
+    dists = np.asarray(dists, dtype=float)
+    peak_idx = int(peak_idx)
+    if dists.size == 0:
+        return 0
+
+    peak_idx = int(np.clip(peak_idx, 0, dists.size - 1))
+    peak_dist = dists[peak_idx]
+    if peak_dist <= 0:
+        return peak_idx
+
+    target_dist = float(distance_fraction) * peak_dist
+    tail = dists[peak_idx:]
+    crossing = np.where(tail <= target_dist)[0]
+    if crossing.size > 0:
+        return int(min(peak_idx + crossing[0], dists.size - 1))
+
+    return int(dists.size - 1)
+
+
+def _darken_color(color, factor=0.65):
+    """Return a darker version of any Matplotlib-compatible color."""
+    rgb = np.array(to_rgb(color))
+    return to_hex(np.clip(rgb * factor, 0, 1))
+
+
 def knee_from_sorted_curve(
     N,
     mask=None,
@@ -687,10 +942,13 @@ def knee_from_sorted_curve(
     normalize_y=False,
     figsize=(3, 3),
     dpi=150,
+    plot_top_zoom=False,
+    zoom_top_fraction=0.05,
     curve_color="#1f77b4",
     line_color="#d62728",
     second_line_color="#ff7f0e",
-    third_line_color="#2ca02c",
+    sharper_first_line_color=None,
+    sharper_second_line_color=None,
     lw=2.2,
     show=True,
     ax=None,
@@ -698,8 +956,10 @@ def knee_from_sorted_curve(
     min_run=25,
     smooth_window=11,
     detect_second_knee=True,
-    detect_third_knee=True,
-    third_knee_mode=0,
+    detect_sharper_first_knee=True,
+    sharper_first_knee_distance_fraction=0.95,
+    detect_sharper_second_knee=True,
+    sharper_second_knee_distance_fraction=None,
 ):
     """
     Publication-style single-panel knee plot for a 2D niche map.
@@ -735,12 +995,17 @@ def knee_from_sorted_curve(
     occupancy : float
         Fraction of valid pixels above first-knee threshold.
     info : dict
-        Diagnostic information, including second/third-knee fields when enabled.
+        Diagnostic information, including sharper first/second knee fields when enabled.
     """
     # Full data for plotting + occupancy
     x_all = flatten_valid(N, mask=mask)
     if x_all.size < 10:
         raise ValueError("Not enough valid pixels to estimate a knee.")
+
+    if sharper_first_line_color is None:
+        sharper_first_line_color = _darken_color(curve_color)
+    if sharper_second_line_color is None:
+        sharper_second_line_color = _darken_color(second_line_color)
 
     x_all_sorted = np.sort(x_all)
     n_all = len(x_all_sorted)
@@ -772,6 +1037,7 @@ def knee_from_sorted_curve(
 
     # Occupancy on all valid pixels (first knee)
     occupancy = np.mean(x_all > threshold)
+    knee_pct = 100 * (1 - occupancy)
 
     # Map first knee threshold back onto full sorted curve
     knee_idx_all = np.searchsorted(x_all_sorted, threshold, side="left")
@@ -787,6 +1053,7 @@ def knee_from_sorted_curve(
     second_knee_idx_all = None
     second_knee_x_all = None
     second_dists = None
+    second_idx_local = None
 
     if detect_second_knee:
         second_start_fit = knee_idx_fit
@@ -801,37 +1068,57 @@ def knee_from_sorted_curve(
             second_knee_idx_all = int(np.clip(second_knee_idx_all, 0, n_all - 1))
             second_knee_x_all = xs_all[second_knee_idx_all]
 
-    # Optional third knee: non-auto knee (default mode: full curve, start index 0)
-    third_threshold = None
-    third_occupancy = None
-    third_knee_pct = None
-    third_start_idx = None
-    third_knee_idx_fit = None
-    third_knee_idx_all = None
-    third_knee_x_all = None
-    third_dists = None
+    # Optional sharper first knee: conservative first-knee threshold from first-knee geometry.
+    sharper_first_threshold = None
+    sharper_first_occupancy = None
+    sharper_first_knee_pct = None
+    sharper_first_knee_idx_fit = None
+    sharper_first_knee_idx_all = None
+    sharper_first_knee_x_all = None
 
-    if detect_third_knee:
-        if third_knee_mode == "full":
-            third_start_idx = 0
-        elif third_knee_mode == "zero":
-            third_start_idx = np.searchsorted(x_all_sorted, 0.0, side="right")
-            third_start_idx = int(min(third_start_idx, n_all - 1))
-        elif isinstance(third_knee_mode, (int, np.integer)):
-            third_start_idx = int(np.clip(third_knee_mode, 0, n_all - 1))
-        else:
-            raise ValueError("third_knee_mode must be 'full', 'zero', or an integer index.")
+    if detect_sharper_first_knee:
+        sharper_first_knee_idx_fit = _right_distance_fraction_index(
+            dists,
+            knee_idx_fit,
+            distance_fraction=sharper_first_knee_distance_fraction,
+        )
+        if sharper_first_knee_idx_fit <= knee_idx_fit and knee_idx_fit < n_fit - 1:
+            sharper_first_knee_idx_fit = int(knee_idx_fit + 1)
+        sharper_first_threshold = x_fit_sorted[sharper_first_knee_idx_fit]
+        sharper_first_occupancy = np.mean(x_all > sharper_first_threshold)
+        sharper_first_knee_pct = 100 * (1 - sharper_first_occupancy)
+        sharper_first_knee_idx_all = int(np.searchsorted(x_all_sorted, sharper_first_threshold, side="left"))
+        sharper_first_knee_idx_all = int(np.clip(sharper_first_knee_idx_all, 0, n_all - 1))
+        sharper_first_knee_x_all = xs_all[sharper_first_knee_idx_all]
 
-        x_third_fit_sorted = x_all_sorted[third_start_idx:]
-        if x_third_fit_sorted.size >= 10:
-            third_knee_idx_fit_local, _, _, third_dists = _knee_on_sorted_segment(x_third_fit_sorted)
-            third_knee_idx_fit = int(third_knee_idx_fit_local)
-            third_threshold = x_third_fit_sorted[third_knee_idx_fit]
-            third_occupancy = np.mean(x_all > third_threshold)
-            third_knee_pct = 100 * (1 - third_occupancy)
-            third_knee_idx_all = int(np.searchsorted(x_all_sorted, third_threshold, side="left"))
-            third_knee_idx_all = int(np.clip(third_knee_idx_all, 0, n_all - 1))
-            third_knee_x_all = xs_all[third_knee_idx_all]
+    # Optional sharper second knee: conservative version of the second knee.
+    sharper_second_threshold = None
+    sharper_second_occupancy = None
+    sharper_second_knee_pct = None
+    sharper_second_knee_idx_fit = None
+    sharper_second_knee_idx_all = None
+    sharper_second_knee_x_all = None
+
+    if detect_sharper_second_knee and second_knee_idx_fit is not None and second_dists is not None:
+        sharper_second_fraction = (
+            sharper_first_knee_distance_fraction
+            if sharper_second_knee_distance_fraction is None
+            else sharper_second_knee_distance_fraction
+        )
+        sharper_second_idx_local = _right_distance_fraction_index(
+            second_dists,
+            second_idx_local,
+            distance_fraction=sharper_second_fraction,
+        )
+        if sharper_second_idx_local <= second_idx_local and second_idx_local < len(second_dists) - 1:
+            sharper_second_idx_local = int(second_idx_local + 1)
+        sharper_second_knee_idx_fit = int(second_start_fit + sharper_second_idx_local)
+        sharper_second_threshold = x_fit_sorted[sharper_second_knee_idx_fit]
+        sharper_second_occupancy = np.mean(x_all > sharper_second_threshold)
+        sharper_second_knee_pct = 100 * (1 - sharper_second_occupancy)
+        sharper_second_knee_idx_all = int(np.searchsorted(x_all_sorted, sharper_second_threshold, side="left"))
+        sharper_second_knee_idx_all = int(np.clip(sharper_second_knee_idx_all, 0, n_all - 1))
+        sharper_second_knee_x_all = xs_all[sharper_second_knee_idx_all]
 
     # Plot values
     if normalize_y:
@@ -853,10 +1140,23 @@ def knee_from_sorted_curve(
     # Create figure if needed
     created_fig = False
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        if plot_top_zoom:
+            fig, axes = plt.subplots(
+                1,
+                2,
+                figsize=(figsize[0] * 2.1, figsize[1]),
+                dpi=dpi,
+                gridspec_kw={"width_ratios": [1.0, 1.0]},
+            )
+            ax = axes[0]
+            zoom_ax = axes[1]
+        else:
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+            zoom_ax = None
         created_fig = True
     else:
         fig = ax.figure
+        zoom_ax = None
 
     # Full curve
     ax.plot(xs_all, y_all_plot, color=curve_color, lw=lw)
@@ -881,15 +1181,31 @@ def knee_from_sorted_curve(
         ax.axhline(second_knee_y_all, linestyle="-.", color=second_line_color, lw=1.5, alpha=0.9)
         ax.scatter(second_knee_x_all, second_knee_y_all, s=48, color=second_line_color, zorder=5)
 
-    # Third knee guides/marker (non-auto)
-    if third_knee_idx_all is not None:
-        third_knee_y_all = y_all_plot[third_knee_idx_all]
-        ax.axvline(third_knee_x_all, linestyle=":", color=third_line_color, lw=1.5, alpha=0.95)
-        ax.axhline(third_knee_y_all, linestyle=":", color=third_line_color, lw=1.5, alpha=0.95)
-        ax.scatter(third_knee_x_all, third_knee_y_all, s=44, color=third_line_color, zorder=5)
+    # Sharper first knee guides/marker
+    if sharper_first_knee_idx_all is not None:
+        sharper_first_knee_y_all = y_all_plot[sharper_first_knee_idx_all]
+        ax.axvline(sharper_first_knee_x_all, linestyle=(0, (3, 1, 1, 1)), color=sharper_first_line_color, lw=1.5, alpha=0.95)
+        ax.axhline(sharper_first_knee_y_all, linestyle=(0, (3, 1, 1, 1)), color=sharper_first_line_color, lw=1.5, alpha=0.95)
+        ax.scatter(sharper_first_knee_x_all, sharper_first_knee_y_all, s=44, color=sharper_first_line_color, zorder=5)
+
+    # Sharper second knee guides/marker
+    if sharper_second_knee_idx_all is not None:
+        sharper_second_knee_y_all = y_all_plot[sharper_second_knee_idx_all]
+        ax.axvline(sharper_second_knee_x_all, linestyle=(0, (5, 1, 1, 1)), color=sharper_second_line_color, lw=1.5, alpha=0.95)
+        ax.axhline(sharper_second_knee_y_all, linestyle=(0, (5, 1, 1, 1)), color=sharper_second_line_color, lw=1.5, alpha=0.95)
+        ax.scatter(sharper_second_knee_x_all, sharper_second_knee_y_all, s=44, color=sharper_second_line_color, zorder=5)
+
+    percentile_parts = [f"K1 p{knee_pct:.1f}"]
+    if sharper_first_knee_pct is not None:
+        percentile_parts.append(f"K1S p{sharper_first_knee_pct:.1f}")
+    if second_knee_pct is not None:
+        percentile_parts.append(f"K2 p{second_knee_pct:.1f}")
+    if sharper_second_knee_pct is not None:
+        percentile_parts.append(f"K2S p{sharper_second_knee_pct:.1f}")
+    percentile_title = "Sorted niche intensity distribution\n" + " | ".join(percentile_parts)
 
     # Labels and title
-    ax.set_title("Sorted niche intensity distribution", fontsize=10, pad=8)
+    ax.set_title(percentile_title, fontsize=7.5, pad=6)
     ax.set_xlabel("Normalized sorted index", fontsize=9)
     ax.set_ylabel(y_label, fontsize=9)
 
@@ -899,40 +1215,42 @@ def knee_from_sorted_curve(
     ax.tick_params(axis="both", labelsize=8, width=1)
     ax.set_box_aspect(1)
 
-    # Annotation
-    knee_pct = 100 * (1 - occupancy)
-    second_txt = ""
-    if second_threshold is not None and second_occupancy is not None:
-        second_txt = (
-            f"\n2nd knee threshold = {second_threshold:.3g}"
-            f"\n2nd-knee occupancy = {second_occupancy:.3%}"
-            f"\n2nd approx. percentile = p{second_knee_pct:.1f}"
-        )
-    third_txt = ""
-    if third_threshold is not None and third_occupancy is not None:
-        third_txt = (
-            f"\n3rd knee (non-auto) = {third_threshold:.3g}"
-            f"\n3rd-knee occupancy = {third_occupancy:.3%}"
-            f"\n3rd approx. percentile = p{third_knee_pct:.1f}"
-        )
-    txt = (
-        f"Knee threshold = {threshold:.3g}\n"
-        f"Estimated occupancy = {occupancy:.3%}\n"
-        f"Approx. percentile = p{knee_pct:.1f}\n"
-        f"Fit start = {start_idx / n_all:.3f}"
-        f"{second_txt}"
-        f"{third_txt}"
-    )
-    ax.text(
-        0.03,
-        0.97,
-        txt,
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=4.8,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="0.85", alpha=0.95),
-    )
+    # Optional right-hand zoom into the high-intensity tail.
+    if zoom_ax is not None:
+        zoom_start_idx = int(np.clip(np.floor((1.0 - float(zoom_top_fraction)) * n_all), 0, n_all - 1))
+        zoom_start_x = xs_all[zoom_start_idx]
+
+        zoom_ax.plot(xs_all[zoom_start_idx:], y_all_plot[zoom_start_idx:], color=curve_color, lw=lw)
+        zoom_ax.axvline(knee_x_all, linestyle="--", color=line_color, lw=1.5, alpha=0.85)
+        zoom_ax.axhline(knee_y_all, linestyle="--", color=line_color, lw=1.5, alpha=0.85)
+        zoom_ax.scatter(knee_x_all, knee_y_all, s=45, color=curve_color, zorder=5)
+
+        if second_knee_idx_all is not None:
+            second_knee_y_all = y_all_plot[second_knee_idx_all]
+            zoom_ax.axvline(second_knee_x_all, linestyle="-.", color=second_line_color, lw=1.4, alpha=0.9)
+            zoom_ax.axhline(second_knee_y_all, linestyle="-.", color=second_line_color, lw=1.4, alpha=0.9)
+            zoom_ax.scatter(second_knee_x_all, second_knee_y_all, s=40, color=second_line_color, zorder=5)
+
+        if sharper_first_knee_idx_all is not None:
+            sharper_first_knee_y_all = y_all_plot[sharper_first_knee_idx_all]
+            zoom_ax.axvline(sharper_first_knee_x_all, linestyle=(0, (3, 1, 1, 1)), color=sharper_first_line_color, lw=1.4, alpha=0.95)
+            zoom_ax.axhline(sharper_first_knee_y_all, linestyle=(0, (3, 1, 1, 1)), color=sharper_first_line_color, lw=1.4, alpha=0.95)
+            zoom_ax.scatter(sharper_first_knee_x_all, sharper_first_knee_y_all, s=38, color=sharper_first_line_color, zorder=5)
+
+        if sharper_second_knee_idx_all is not None:
+            sharper_second_knee_y_all = y_all_plot[sharper_second_knee_idx_all]
+            zoom_ax.axvline(sharper_second_knee_x_all, linestyle=(0, (5, 1, 1, 1)), color=sharper_second_line_color, lw=1.4, alpha=0.95)
+            zoom_ax.axhline(sharper_second_knee_y_all, linestyle=(0, (5, 1, 1, 1)), color=sharper_second_line_color, lw=1.4, alpha=0.95)
+            zoom_ax.scatter(sharper_second_knee_x_all, sharper_second_knee_y_all, s=38, color=sharper_second_line_color, zorder=5)
+
+        zoom_ax.set_xlim(zoom_start_x, 1.0)
+        zoom_ax.set_title(f"Top {100 * zoom_top_fraction:.1f}% zoom\n" + " | ".join(percentile_parts), fontsize=7.5, pad=6)
+        zoom_ax.set_xlabel("Normalized sorted index", fontsize=9)
+        zoom_ax.set_ylabel(y_label, fontsize=9)
+        zoom_ax.spines["top"].set_visible(False)
+        zoom_ax.spines["right"].set_visible(False)
+        zoom_ax.tick_params(axis="both", labelsize=8, width=1)
+        zoom_ax.set_box_aspect(1)
 
     fig.tight_layout()
 
@@ -955,15 +1273,28 @@ def knee_from_sorted_curve(
         "second_threshold": second_threshold,
         "second_occupancy": second_occupancy,
         "second_approx_percentile": second_knee_pct,
-        "third_knee_enabled": detect_third_knee,
-        "third_knee_mode": third_knee_mode,
-        "third_start_idx": third_start_idx,
-        "third_knee_index_fit": third_knee_idx_fit,
-        "third_knee_index_all": third_knee_idx_all,
-        "third_knee_x_all": third_knee_x_all,
-        "third_threshold": third_threshold,
-        "third_occupancy": third_occupancy,
-        "third_approx_percentile": third_knee_pct,
+        "sharper_first_knee_enabled": detect_sharper_first_knee,
+        "sharper_first_knee_method": "right_distance_fraction",
+        "sharper_first_knee_distance_fraction": sharper_first_knee_distance_fraction,
+        "sharper_first_knee_index_fit": sharper_first_knee_idx_fit,
+        "sharper_first_knee_index_all": sharper_first_knee_idx_all,
+        "sharper_first_knee_x_all": sharper_first_knee_x_all,
+        "sharper_first_threshold": sharper_first_threshold,
+        "sharper_first_occupancy": sharper_first_occupancy,
+        "sharper_first_approx_percentile": sharper_first_knee_pct,
+        "sharper_second_knee_enabled": detect_sharper_second_knee,
+        "sharper_second_knee_method": "right_distance_fraction_from_second_knee",
+        "sharper_second_knee_distance_fraction": (
+            sharper_second_fraction if "sharper_second_fraction" in locals() else None
+        ),
+        "sharper_second_knee_index_fit": sharper_second_knee_idx_fit,
+        "sharper_second_knee_index_all": sharper_second_knee_idx_all,
+        "sharper_second_knee_x_all": sharper_second_knee_x_all,
+        "sharper_second_threshold": sharper_second_threshold,
+        "sharper_second_occupancy": sharper_second_occupancy,
+        "sharper_second_approx_percentile": sharper_second_knee_pct,
+        "plot_top_zoom": plot_top_zoom,
+        "zoom_top_fraction": zoom_top_fraction,
         "x_all_sorted": x_all_sorted,
         "xs_all": xs_all,
         "x_fit_sorted": x_fit_sorted,
@@ -971,7 +1302,6 @@ def knee_from_sorted_curve(
         "ys_fit": ys_fit,
         "distances": dists,
         "second_distances": second_dists,
-        "third_distances": third_dists,
     }
 
     return threshold, occupancy, info

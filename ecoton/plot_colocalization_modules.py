@@ -319,7 +319,7 @@ def plot_gene_program_from_W(
     ax.set_yticklabels(genes, fontsize=gene_fontsize)
 
     xmax = float(vals.max()) if len(vals) else 1.0
-    ax.set_xlim(0, xmax * 1.05)
+    ax.set_xlim(0, max(xmax * 1.05, 1.02))
     ax.set_xlabel("Weight", fontsize=axis_fontsize)
 
     if title is None:
@@ -333,7 +333,8 @@ def plot_gene_program_from_W(
     ax.tick_params(axis="y", length=0)
 
     ax.xaxis.set_ticks_position("bottom")
-    ax.grid(axis="x", linewidth=0.5, alpha=0.3)
+    ax.grid(False, axis="x")
+    ax.axvline(1.0, linewidth=0.8, alpha=0.5, color="0.75", zorder=0)
 
     plt.tight_layout()
     return fig, ax
