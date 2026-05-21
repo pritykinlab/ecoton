@@ -120,6 +120,23 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument(
+        "--niche-normalization-pkl",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to a pickled niche-map normalization stats dict. "
+            "If provided, its pooled mean/std and gene set are used to normalize "
+            "single-slice niche maps. The pickle can be either the stats dict itself "
+            "or a workflow pickle containing key 'niche_normalization_stats'."
+        ),
+    )
+    parser.add_argument(
+        "--save-niche-normalization-pkl",
+        type=Path,
+        default=None,
+        help="Optional path to save the niche-map normalization stats used in this run.",
+    )
+    parser.add_argument(
         "--save-module-plot",
         action="store_true",
         help="Save selected archetypal module plot to output dir.",
@@ -246,8 +263,29 @@ def run_workflow(args):
     gene_labels = transcripts[results["gene_name"]].values
     W_df = colocalization_response["W_df"]
 
+    niche_normalization_stats = None
+    if args.niche_normalization_pkl is not None:
+        print(f"Loading niche normalization stats: {args.niche_normalization_pkl}")
+        with args.niche_normalization_pkl.open("rb") as f:
+            loaded = pickle.load(f)
+
+        if isinstance(loaded, dict) and all(key in loaded for key in ("genes_use", "mean_g", "std_g")):
+            niche_normalization_stats = loaded
+        elif (
+            isinstance(loaded, dict)
+            and "niche_normalization_stats" in loaded
+            and isinstance(loaded["niche_normalization_stats"], dict)
+        ):
+            niche_normalization_stats = loaded["niche_normalization_stats"]
+        else:
+            raise ValueError(
+                "Invalid --niche-normalization-pkl contents. Expected either a stats dict with keys "
+                "'genes_use', 'mean_g', 'std_g' or a workflow dict containing 'niche_normalization_stats'."
+            )
+
     print("Creating niche maps")
-    niche_maps = run_timed(
+    need_niche_stats = (args.niche_normalization_pkl is not None) or (args.save_niche_normalization_pkl is not None)
+    niche_map_result = run_timed(
         runtime_tracking,
         "create_niche_maps_by_archetype_all_at_once",
         create_niche_maps_by_archetype_all_at_once,
@@ -257,7 +295,14 @@ def run_workflow(args):
         bin_size=args.bin_size,
         smoothing_radius=args.smoothing_radius,
         weight_threshold=args.weight_threshold,
+        normalization_stats=niche_normalization_stats,
+        return_stats=need_niche_stats,
     )
+    if need_niche_stats:
+        niche_maps, niche_normalization_stats_used = niche_map_result
+    else:
+        niche_maps = niche_map_result
+        niche_normalization_stats_used = None
 
     runtime_tracking["total_seconds_through_niche_maps"] = (
         time.perf_counter() - runtime_tracking["script_start_perf_counter"]
@@ -271,6 +316,7 @@ def run_workflow(args):
         "analytic_response": analytic_response,
         "colocalization_response": colocalization_response,
         "niche_maps": niche_maps,
+        "niche_normalization_stats": niche_normalization_stats_used,
     }
 
     workflow_pickle = args.output_dir / "workflow.pkl"
@@ -279,6 +325,14 @@ def run_workflow(args):
     print(f"Pickling workflow outputs: {workflow_pickle}")
     with workflow_pickle.open("wb") as f:
         pickle.dump(workflow_out, f)
+
+    if args.save_niche_normalization_pkl is not None:
+        if niche_normalization_stats_used is None:
+            raise ValueError("No niche normalization stats were available to save.")
+        print(f"Pickling niche normalization stats: {args.save_niche_normalization_pkl}")
+        args.save_niche_normalization_pkl.parent.mkdir(exist_ok=True, parents=True)
+        with args.save_niche_normalization_pkl.open("wb") as f:
+            pickle.dump(niche_normalization_stats_used, f)
 
     print(f"Pickling runtime tracking: {runtime_pickle}")
     with runtime_pickle.open("wb") as f:

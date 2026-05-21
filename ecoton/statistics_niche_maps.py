@@ -179,6 +179,7 @@ def bin_transcripts(
     dict
         Dictionary containing:
         - 'grid_meta': dict with grid metadata (x_min, y_min, width, height)
+        - 'transcript_bin_ids': pd.Series mapping each input transcript row to its original bin_id
         - 'X': sparse matrix (bins x genes) if return_matrix=True
         - 'bin_index': array of bin IDs if return_matrix=True
         - 'gene_names': array of gene names if return_matrix=True
@@ -201,7 +202,13 @@ def bin_transcripts(
     bin_id, grid_meta = _compute_bin_id_and_grid_meta(df, bin_size, x_col, y_col, verbose=verbose)
     P = grid_meta["P"]
 
-    out = {"grid_meta": {k: grid_meta[k] for k in ("x_min", "y_min", "width", "height")}}
+    out = {
+        "grid_meta": {k: grid_meta[k] for k in ("x_min", "y_min", "width", "height")},
+        "transcript_bin_ids": pd.Series(bin_id, index=df.index, name="bin_id"),
+    }
+
+    if verbose:
+        print("[bin_transcripts] stored transcript_bin_ids mapping aligned to df.index")
 
     need_cells = return_cells or return_matrix_split_assignment
     if need_cells:

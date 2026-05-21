@@ -1,6 +1,6 @@
 from importlib import import_module
 
-__version__ = "0.2.5"
+__version__ = "0.3.0"
 __all__ = [
     "ComputeMetatranscripts",
     
@@ -22,7 +22,11 @@ __all__ = [
     "plot_niche_continuous_only",
     "plot_niche_percentile_categories_only",
     "plot_niche_continuous_and_percentile_categories",
+    "compute_niche_map_normalization_stats_across_slices",
+    "compute_niche_map_normalization_stats_across_slices_streaming",
     "create_niche_maps_by_archetype_all_at_once",
+    "create_niche_maps_by_archetype_pooled_across_slices",
+    "create_niche_maps_by_archetype_pooled_across_slices_streaming",
     "enrichr_with_local_gmt",
 ]
 
@@ -47,7 +51,11 @@ _EXPORT_TO_MODULE = {
     "plot_niche_continuous_only": ".plot_niche_maps",
     "plot_niche_percentile_categories_only": ".plot_niche_maps",
     "plot_niche_continuous_and_percentile_categories": ".plot_niche_maps",
+    "compute_niche_map_normalization_stats_across_slices": ".compute_niche_maps",
+    "compute_niche_map_normalization_stats_across_slices_streaming": ".compute_niche_maps",
     "create_niche_maps_by_archetype_all_at_once": ".compute_niche_maps",
+    "create_niche_maps_by_archetype_pooled_across_slices": ".compute_niche_maps",
+    "create_niche_maps_by_archetype_pooled_across_slices_streaming": ".compute_niche_maps",
     "enrichr_with_local_gmt": ".enrichment",
 }
 
