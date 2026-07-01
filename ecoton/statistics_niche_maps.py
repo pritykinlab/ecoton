@@ -7,7 +7,7 @@ computing niche maps, and analyzing cell distributions in selected bins.
 
 import numpy as np
 import pandas as pd
-from scipy import sparse
+from scipy import ndimage, sparse
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb, to_hex
 
@@ -546,6 +546,346 @@ def bins_from_niche_threshold_with_support(
     if return_support_table:
         return selected_bin_ids_supported, mask_supported, t, support_table
     return selected_bin_ids_supported, mask_supported, t
+
+
+def niche_unassigned_transcript_stats(
+    niche_maps,
+    grid_meta,
+    binning_output,
+    k=0,
+    threshold="p90",
+    genes_of_interest=None,
+    case_sensitive=True,
+    return_selected_bin_ids=False,
+):
+    """
+    Compute assigned/unassigned transcript counts for a thresholded niche.
+
+    Requires ``binning_output`` from
+    ``bin_transcripts(..., return_matrix_split_assignment=True)``.
+
+    Parameters
+    ----------
+    niche_maps : np.ndarray
+        Niche map array with shape ``(height, width, n_niches)``.
+    grid_meta : dict
+        Grid metadata returned by ``bin_transcripts``. ``x_min`` and ``y_min``
+        are reused, while ``width`` and ``height`` are aligned to
+        ``niche_maps.shape[:2]`` for thresholding.
+    binning_output : dict
+        Output of ``bin_transcripts`` containing ``X_split``,
+        ``bin_index_split``, and ``gene_names_split``.
+    k : int, default 0
+        Niche index.
+    threshold : str or float, default "p90"
+        Threshold passed to ``bins_from_niche_threshold``.
+    genes_of_interest : iterable or None, default None
+        Optional subset of genes to restrict the counts to. If ``None``, use
+        all genes in ``gene_names_split``.
+    case_sensitive : bool, default True
+        Whether gene matching for ``genes_of_interest`` should be case-sensitive.
+    return_selected_bin_ids : bool, default False
+        If ``True``, include the selected bin IDs in the returned dict.
+
+    Returns
+    -------
+    stats : dict
+        Dictionary with:
+        - ``niche_k``
+        - ``threshold_value``
+        - ``n_selected_bins``
+        - ``n_matrix_rows_selected``
+        - ``n_genes_requested``
+        - ``n_genes_found``
+        - ``genes_found``
+        - ``assigned_transcripts``
+        - ``unassigned_transcripts``
+        - ``total_transcripts``
+        - ``prop_assigned``
+        - ``prop_unassigned``
+        - optionally ``selected_bin_ids`` when ``return_selected_bin_ids=True``
+    """
+    if binning_output is None:
+        raise ValueError("binning_output must not be None")
+    if "X_split" not in binning_output or "bin_index_split" not in binning_output or "gene_names_split" not in binning_output:
+        raise ValueError(
+            "binning_output must contain keys 'X_split', 'bin_index_split', and 'gene_names_split'. "
+            "Pass the output of bin_transcripts(..., return_matrix_split_assignment=True)."
+        )
+
+    X_split = binning_output["X_split"]
+    bin_index = np.asarray(binning_output["bin_index_split"], dtype=np.int64)
+    gene_names = np.asarray(binning_output["gene_names_split"])
+    G = len(gene_names)
+
+    if X_split.shape[1] != 2 * G:
+        raise ValueError(
+            f"X_split has {X_split.shape[1]} columns but expected 2 * len(gene_names_split) = {2 * G}"
+        )
+
+    grid_meta_for_niche = {
+        **grid_meta,
+        "height": int(niche_maps.shape[0]),
+        "width": int(niche_maps.shape[1]),
+    }
+    selected_bin_ids, _, threshold_value = bins_from_niche_threshold(
+        niche_maps=niche_maps,
+        grid_meta=grid_meta_for_niche,
+        k=k,
+        threshold=threshold,
+    )
+
+    row_mask = np.isin(bin_index, np.asarray(selected_bin_ids, dtype=np.int64))
+    X_sel = X_split[row_mask, :]
+
+    requested_gene_count = None
+    if genes_of_interest is None:
+        gene_idx = np.arange(G, dtype=np.int64)
+        genes_found = gene_names.astype(str).tolist()
+    else:
+        genes_of_interest = list(genes_of_interest)
+        if len(genes_of_interest) == 0:
+            raise ValueError("genes_of_interest must contain at least one gene when provided")
+
+        requested_gene_count = len(genes_of_interest)
+        gene_names_str = gene_names.astype(str)
+
+        if case_sensitive:
+            gene_to_idx = {g: i for i, g in enumerate(gene_names_str)}
+            matched_pairs = [(g, gene_to_idx[g]) for g in genes_of_interest if g in gene_to_idx]
+        else:
+            gene_to_idx = {}
+            for i, g in enumerate(gene_names_str):
+                gene_to_idx.setdefault(g.upper(), i)
+            matched_pairs = []
+            for g in genes_of_interest:
+                key = str(g).upper()
+                if key in gene_to_idx:
+                    matched_pairs.append((gene_names_str[gene_to_idx[key]], gene_to_idx[key]))
+
+        if len(matched_pairs) == 0:
+            raise ValueError("None of the provided genes_of_interest were found in gene_names_split")
+
+        seen_idx = set()
+        genes_found = []
+        gene_idx_list = []
+        for gene_name, idx in matched_pairs:
+            if idx in seen_idx:
+                continue
+            seen_idx.add(idx)
+            genes_found.append(str(gene_name))
+            gene_idx_list.append(int(idx))
+
+        gene_idx = np.asarray(gene_idx_list, dtype=np.int64)
+
+    assigned_ct = float(X_sel[:, gene_idx].sum())
+    unassigned_ct = float(X_sel[:, gene_idx + G].sum())
+    total_ct = assigned_ct + unassigned_ct
+
+    stats = {
+        "niche_k": int(k),
+        "threshold_value": float(threshold_value),
+        "n_selected_bins": int(len(selected_bin_ids)),
+        "n_matrix_rows_selected": int(row_mask.sum()),
+        "n_genes_requested": int(requested_gene_count) if requested_gene_count is not None else None,
+        "n_genes_found": int(len(genes_found)),
+        "genes_found": genes_found,
+        "assigned_transcripts": int(assigned_ct),
+        "unassigned_transcripts": int(unassigned_ct),
+        "total_transcripts": int(total_ct),
+        "prop_assigned": float(assigned_ct / total_ct) if total_ct > 0 else np.nan,
+        "prop_unassigned": float(unassigned_ct / total_ct) if total_ct > 0 else np.nan,
+    }
+
+    if return_selected_bin_ids:
+        stats["selected_bin_ids"] = np.asarray(selected_bin_ids, dtype=np.int64)
+
+    return stats
+
+
+def connected_components_from_selected_bins(
+    selected_bin_ids,
+    grid_meta,
+    connectivity=4,
+    return_labeled_mask=False,
+):
+    """
+    Label connected components among selected bins and count bins per component.
+
+    Parameters
+    ----------
+    selected_bin_ids : array-like
+        Original bin_id values, such as the output of
+        ``bins_from_niche_threshold`` or
+        ``bins_from_niche_threshold_with_support``.
+    grid_meta : dict
+        Grid metadata returned by ``bin_transcripts``. Must contain
+        ``width`` and ``height``.
+    connectivity : {4, 8}, default 4
+        Pixel connectivity used to define adjacency between bins.
+        ``4`` uses orthogonal neighbors only; ``8`` also includes diagonals.
+    return_labeled_mask : bool, default False
+        If ``True``, also return the full ``(height, width)`` labeled mask.
+
+    Returns
+    -------
+    component_table : pd.DataFrame
+        Indexed by ``bin_id`` with columns:
+        - ``component_id``: connected-component label starting at 1
+        - ``component_n_bins``: total number of selected bins in that component
+    component_summary : pd.DataFrame
+        Indexed by ``component_id`` with columns:
+        - ``component_n_bins``: total number of selected bins in that component
+        - ``bbox_width_bins``, ``bbox_height_bins``, ``bbox_area_bins``
+        - ``extent``
+        - ``perimeter_edges``
+        - ``compactness``
+        - ``centroid_x_bin``, ``centroid_y_bin``
+        - ``aspect_ratio``
+        - ``touches_border``
+    labeled_mask : np.ndarray[int32], optional
+        Returned only when ``return_labeled_mask=True``. Zero indicates
+        background; positive integers indicate component labels.
+    """
+    if connectivity not in (4, 8):
+        raise ValueError("connectivity must be either 4 or 8")
+
+    width = int(grid_meta["width"])
+    height = int(grid_meta["height"])
+    max_bin_id = width * height
+
+    selected_bin_ids = np.asarray(selected_bin_ids, dtype=np.int64)
+    if selected_bin_ids.ndim != 1:
+        raise ValueError("selected_bin_ids must be one-dimensional")
+
+    if selected_bin_ids.size == 0:
+        empty_components = pd.DataFrame(
+            {
+                "component_id": pd.Series(dtype=np.int32),
+                "component_n_bins": pd.Series(dtype=np.int64),
+            },
+            index=pd.Index([], name="bin_id"),
+        )
+        empty_summary = pd.DataFrame(
+            {
+                "component_n_bins": pd.Series(dtype=np.int64),
+                "bbox_width_bins": pd.Series(dtype=np.int64),
+                "bbox_height_bins": pd.Series(dtype=np.int64),
+                "bbox_area_bins": pd.Series(dtype=np.int64),
+                "extent": pd.Series(dtype=np.float64),
+                "perimeter_edges": pd.Series(dtype=np.int64),
+                "compactness": pd.Series(dtype=np.float64),
+                "centroid_x_bin": pd.Series(dtype=np.float64),
+                "centroid_y_bin": pd.Series(dtype=np.float64),
+                "aspect_ratio": pd.Series(dtype=np.float64),
+                "touches_border": pd.Series(dtype=bool),
+            },
+            index=pd.Index([], name="component_id"),
+        )
+        if return_labeled_mask:
+            return empty_components, empty_summary, np.zeros((height, width), dtype=np.int32)
+        return empty_components, empty_summary
+
+    selected_bin_ids = np.unique(selected_bin_ids)
+    if np.any(selected_bin_ids < 0) or np.any(selected_bin_ids >= max_bin_id):
+        raise ValueError(
+            "selected_bin_ids contains values outside the valid range "
+            f"[0, {max_bin_id - 1}] for the provided grid_meta"
+        )
+
+    ys = selected_bin_ids // width
+    xs = selected_bin_ids % width
+
+    mask = np.zeros((height, width), dtype=bool)
+    mask[ys, xs] = True
+
+    structure = ndimage.generate_binary_structure(2, 1 if connectivity == 4 else 2)
+    labeled_mask, _ = ndimage.label(mask, structure=structure)
+
+    component_ids = labeled_mask[ys, xs].astype(np.int32, copy=False)
+    component_sizes = np.bincount(labeled_mask.ravel())
+    component_n_bins = component_sizes[component_ids].astype(np.int64, copy=False)
+
+    component_table = pd.DataFrame(
+        {
+            "component_id": component_ids,
+            "component_n_bins": component_n_bins,
+        },
+        index=pd.Index(selected_bin_ids, name="bin_id"),
+    )
+
+    summary_rows = []
+    neighbor_offsets = np.array([
+        [-1, 0],
+        [1, 0],
+        [0, -1],
+        [0, 1],
+    ], dtype=np.int64)
+
+    for component_id in np.unique(component_ids):
+        component_mask = component_ids == component_id
+        comp_xs = xs[component_mask]
+        comp_ys = ys[component_mask]
+        comp_n_bins = int(component_mask.sum())
+
+        x_min = int(comp_xs.min())
+        x_max = int(comp_xs.max())
+        y_min = int(comp_ys.min())
+        y_max = int(comp_ys.max())
+
+        bbox_width_bins = int(x_max - x_min + 1)
+        bbox_height_bins = int(y_max - y_min + 1)
+        bbox_area_bins = int(bbox_width_bins * bbox_height_bins)
+        extent = float(comp_n_bins / bbox_area_bins)
+
+        comp_coords = np.column_stack([comp_ys, comp_xs])
+        perimeter_edges = 0
+        for y, x in comp_coords:
+            neighbors = neighbor_offsets + np.array([y, x], dtype=np.int64)
+            valid = (
+                (neighbors[:, 0] >= 0)
+                & (neighbors[:, 0] < height)
+                & (neighbors[:, 1] >= 0)
+                & (neighbors[:, 1] < width)
+            )
+            perimeter_edges += int((~valid).sum())
+            if np.any(valid):
+                perimeter_edges += int((~mask[neighbors[valid, 0], neighbors[valid, 1]]).sum())
+
+        compactness = float(4.0 * np.pi * comp_n_bins / (perimeter_edges ** 2)) if perimeter_edges > 0 else np.nan
+        centroid_x_bin = float(comp_xs.mean())
+        centroid_y_bin = float(comp_ys.mean())
+        aspect_ratio = float(bbox_width_bins / bbox_height_bins)
+        touches_border = bool(
+            (x_min == 0)
+            or (y_min == 0)
+            or (x_max == width - 1)
+            or (y_max == height - 1)
+        )
+
+        summary_rows.append(
+            {
+                "component_id": int(component_id),
+                "component_n_bins": comp_n_bins,
+                "bbox_width_bins": bbox_width_bins,
+                "bbox_height_bins": bbox_height_bins,
+                "bbox_area_bins": bbox_area_bins,
+                "extent": extent,
+                "perimeter_edges": perimeter_edges,
+                "compactness": compactness,
+                "centroid_x_bin": centroid_x_bin,
+                "centroid_y_bin": centroid_y_bin,
+                "aspect_ratio": aspect_ratio,
+                "touches_border": touches_border,
+            }
+        )
+
+    component_summary = pd.DataFrame(summary_rows).set_index("component_id").sort_index()
+    component_summary.index = pd.Index(component_summary.index, name="component_id")
+
+    if return_labeled_mask:
+        return component_table, component_summary, labeled_mask
+    return component_table, component_summary
 
 
 def cells_in_selected_bins(

@@ -27,6 +27,8 @@ def plot_modules(
     random_state=42,
     label_font_size=8,
     wrap_width=18,
+    alpha_background=0.15,
+    alpha_cluster=0.9,
     ax=None,
 ):
     """
@@ -55,6 +57,10 @@ def plot_modules(
         Font size for cluster labels.
     wrap_width : int, default 18
         Character width for text wrapping.
+    alpha_background : float, default 0.15
+        Alpha for non-target/background points.
+    alpha_cluster : float, default 0.9
+        Alpha for highlighted cluster points.
     ax : matplotlib.axes.Axes, optional
         Axes to plot on. If None, creates new figure.
 
@@ -80,21 +86,44 @@ def plot_modules(
 
     print(f"Graph has {G_ig.vcount()} nodes and {G_ig.ecount()} edges")
 
+    if myclusters is None:
+        myclusters = sorted(module_labels.keys())
+    else:
+        myclusters = list(myclusters)
+
     # ===============================
     # STEP 2. Use full graph and all cluster labels
     # ===============================
     # `G_ig.vs['cluster']` may be an int per-vertex or a list of archetype
-    # indices (soft membership). Choose the first membership as the primary
-    # cluster for coloring; absent membership -> -1.
+    # indices (soft membership). If a node belongs to any highlighted cluster,
+    # use the first matching highlighted cluster; otherwise use the first
+    # membership in the list. Absent membership -> -1.
     raw_membership = np.array(G_ig.vs["cluster"], dtype=object)
     membership = []
     for x in raw_membership:
         if isinstance(x, (list, tuple, np.ndarray)):
             if len(x) > 0:
-                try:
-                    membership.append(int(x[0]))
-                except Exception:
+                normalized_memberships = []
+                for value in x:
+                    try:
+                        normalized_memberships.append(int(value))
+                    except Exception:
+                        continue
+
+                if not normalized_memberships:
                     membership.append(-1)
+                    continue
+
+                chosen_cluster = None
+                for cluster_id in normalized_memberships:
+                    if cluster_id in myclusters:
+                        chosen_cluster = cluster_id
+                        break
+
+                if chosen_cluster is None:
+                    chosen_cluster = normalized_memberships[0]
+
+                membership.append(chosen_cluster)
             else:
                 membership.append(-1)
         else:
@@ -153,10 +182,6 @@ def plot_modules(
     print("Computing density peaks...")
     label_positions = {}
 
-    # FIX: default to actual module ids from module_labels, not range(len(...))
-    if myclusters is None:
-        myclusters = sorted(module_labels.keys())
-
     for cluster_id in unique_clusters:
         if cluster_id not in myclusters:
             continue
@@ -190,7 +215,7 @@ def plot_modules(
         df.loc[~is_target, "y"],
         c=[gray] * (~is_target).sum(),
         s=8,
-        alpha=0.8,
+        alpha=alpha_background,
         zorder=1
     )
 
@@ -200,7 +225,7 @@ def plot_modules(
         df.loc[is_target, "y"],
         c=[color_map[c] for c in membership_sub[is_target]],
         s=8,
-        alpha=0.9,
+        alpha=alpha_cluster,
         zorder=2
     )
 
