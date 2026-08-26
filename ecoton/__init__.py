@@ -1,6 +1,6 @@
 from importlib import import_module
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __all__ = [
     "ComputeMetatranscripts",
     "ProcessColocalizationGraph",
