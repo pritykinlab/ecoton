@@ -3,9 +3,7 @@ from importlib import import_module
 __version__ = "0.3.0"
 __all__ = [
     "ComputeMetatranscripts",
-    
     "ProcessColocalizationGraph",
-    "ComputeCellOverlaps",
     "bin_transcripts",
     "bins_from_niche_threshold",
     "bins_from_niche_threshold_with_support",
@@ -36,7 +34,6 @@ _EXPORT_TO_MODULE = {
     "ComputeMetatranscripts": ".compute_metatranscripts",
     
     "ProcessColocalizationGraph": ".process_colocalization_graph",
-    "ComputeCellOverlaps": ".compute_cell_overlaps",
     "bin_transcripts": ".statistics_niche_maps",
     "bins_from_niche_threshold": ".statistics_niche_maps",
     "bins_from_niche_threshold_with_support": ".statistics_niche_maps",
