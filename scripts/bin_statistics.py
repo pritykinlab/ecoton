@@ -56,7 +56,11 @@ def parse_args(argv=None):
         "--threshold",
         type=str,
         default="p98",
-        help="Threshold string or numeric value used per niche (e.g. p98 or 1.5)",
+        help=(
+            "Threshold used per niche. Accepts a fixed percentile like 'p98' or float like '1.5', "
+            "or a knee label like 'K1', 'K1S', 'K2', 'K2S' to derive a niche-specific percentile "
+            "from knee_from_sorted_curve() for each niche."
+        ),
     )
     parser.add_argument(
         "--n-niches",
@@ -112,12 +116,44 @@ def parse_args(argv=None):
 
 
 def _coerce_threshold(threshold_raw: str):
-    if isinstance(threshold_raw, str) and threshold_raw.lower().startswith("p"):
-        return threshold_raw.lower()
+    if isinstance(threshold_raw, str):
+        cleaned = threshold_raw.strip()
+        if cleaned.lower().startswith("p"):
+            return cleaned.lower()
+        if cleaned.upper() in {"K1", "K1S", "K2", "K2S"}:
+            return cleaned.upper()
     try:
         return float(threshold_raw)
     except Exception:
         return threshold_raw
+
+
+def _resolve_dynamic_knee_threshold(niche_map, threshold_spec, *, show=False, verbose=False):
+    """Resolve a knee label like K1S to a percentile-based threshold string for this niche."""
+    if not isinstance(threshold_spec, str):
+        return _coerce_threshold(threshold_spec)
+
+    label = threshold_spec.strip().upper()
+    field_map = {
+        "K1": "approx_percentile",
+        "K1S": "sharper_first_approx_percentile",
+        "K2": "second_approx_percentile",
+        "K2S": "sharper_second_approx_percentile",
+    }
+    if label not in field_map:
+        return _coerce_threshold(threshold_spec)
+
+    _, _, info = ecoton.knee_from_sorted_curve(np.asarray(niche_map), show=show)
+    pct = info.get(field_map[label])
+    if pct is None or not np.isfinite(pct):
+        raise ValueError(
+            f"Could not derive a percentile for knee label {threshold_spec!r} on this niche. "
+            "The detected knee result did not include the expected diagnostic field."
+        )
+    pct = float(pct)
+    if verbose:
+        print(f"[threshold] niche knee {threshold_spec} -> percentile {pct:.3f}")
+    return f"p{pct:.6f}".rstrip("0").rstrip(".")
 
 
 def _parse_unassigned_tokens(tokens):
@@ -162,6 +198,9 @@ def main(argv=None):
 
     threshold = _coerce_threshold(args.threshold)
     unassigned_tokens = _parse_unassigned_tokens(args.unassigned_token)
+    threshold_label = None
+    if isinstance(args.threshold, str):
+        threshold_label = args.threshold.strip().upper()
     return_matrix = args.return_matrix
     return_matrix_split_assignment = not args.no_return_matrix_split_assignment
     return_cells = not args.no_return_cells
@@ -230,12 +269,28 @@ def main(argv=None):
     }
 
     for k in range(K):
+        niche_threshold = threshold
+        niche_threshold_percentile = None
+
+        if isinstance(threshold, str) and threshold.upper() in {"K1", "K1S", "K2", "K2S"}:
+            niche_threshold = _resolve_dynamic_knee_threshold(
+                niche_maps[:, :, k],
+                threshold,
+                show=False,
+                verbose=args.verbose,
+            )
+            niche_threshold_percentile = float(niche_threshold[1:])
+            if args.verbose:
+                print(
+                    f"[threshold] niche {k}: using knee label {threshold} -> percentile={niche_threshold_percentile:.3f}"
+                )
+
         stats = ecoton.niche_unassigned_transcript_stats(
             niche_maps=niche_maps,
             grid_meta=resp["grid_meta"],
             binning_output=resp,
             k=k,
-            threshold=threshold,
+            threshold=niche_threshold,
             return_selected_bin_ids=True,
         )
 
@@ -294,6 +349,8 @@ def main(argv=None):
         rows.append(
             {
                 "niche_k": int(k),
+                "threshold_spec": threshold_label,
+                "threshold_percentile": niche_threshold_percentile,
                 "threshold_value": float(stats["threshold_value"]),
                 "n_selected_bins": int(stats["n_selected_bins"]),
                 "n_connected_components": n_connected_components,

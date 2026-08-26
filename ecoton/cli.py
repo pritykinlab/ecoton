@@ -109,6 +109,12 @@ def parse_args(argv=None):
     parser.add_argument("--weight-threshold", type=float, default=0.3)
     parser.add_argument("--min-points", "--min_points", dest="min_points", type=int, default=3)
     parser.add_argument(
+        "--adaptive_min_points",
+        type=lambda x: str(x).strip().lower() in ("1", "true", "t", "yes", "y"),
+        default=True,
+        help="Enable/disable adaptive minimum points in metatranscript binning (true/false).",
+    )
+    parser.add_argument(
         "--colocalization-response-pkl",
         type=Path,
         default=None,
@@ -183,6 +189,7 @@ def run_workflow(args):
             transcripts_df,
             mode=args.mode,
             min_points=args.min_points,
+            adaptive_min_points=args.adaptive_min_points,
         )
 
         print("Computing analytic null metatranscripts")
