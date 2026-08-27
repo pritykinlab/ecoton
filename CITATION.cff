@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+
+title: "Ecoton Software"
+type: software
+version: 0.3.1
+date-released: "2026-08-27"
+doi: 10.5281/zenodo.22132806
+
+authors:
+  - family-names: Azad
+    given-names: Tamjeed
+    affiliation: Princeton University
+    orcid: "https://orcid.org/0000-0001-6959-5928"
+
+  - family-names: Pritykin
+    given-names: Yuri
+    affiliation: Princeton University
+    orcid: "https://orcid.org/0000-0001-6589-981X"
+
+license: CC-BY-4.0
+
+abstract: >-
+  Ecoton (Expression Colocalization of Transcripts for Niche Discovery)
+  is a computational method for image-based spatial transcriptomics data.
+  It takes as input the spatial coordinates and gene identities of individual
+  transcripts and outputs a gene-gene colocalization graph along with spatial
+  niches defined directly from transcript colocalization patterns.
